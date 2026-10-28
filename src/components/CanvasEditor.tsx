@@ -44,6 +44,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   version,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
+  const checkerCanvasRef = useRef<HTMLCanvasElement>(null);
+  const uvCanvasRef = useRef<HTMLCanvasElement>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
@@ -62,6 +64,13 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   const strokeStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastPixelRef = useRef<{ x: number; y: number } | null>(null);
   const hasModifiedRef = useRef(false);
+
+  // Move Tool Refs
+  const isMovingSelectionRef = useRef(false);
+  const isMovingLayerRef = useRef(false);
+  const moveDragOffsetRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const layerDragStartRef = useRef<{ x: number; y: number } | null>(null);
+  const layerDragSnapshotRef = useRef<HTMLCanvasElement | null>(null);
 
   // Space key tracker for panning
   const spacePressedRef = useRef(false);
@@ -114,12 +123,16 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     fitToScreen();
   }, [fitToScreen]);
 
-  // Sync overlay canvas size to container viewport
-  const syncOverlaySize = useCallback(() => {
-    if (!containerRef.current || !overlayCanvasRef.current) return;
+  // Sync viewport canvases size to container viewport
+  const syncViewportCanvases = useCallback(() => {
+    if (!containerRef.current) return;
     const w = containerRef.current.clientWidth;
     const h = containerRef.current.clientHeight;
-    if (overlayCanvasRef.current.width !== w || overlayCanvasRef.current.height !== h) {
+    if (uvCanvasRef.current && (uvCanvasRef.current.width !== w || uvCanvasRef.current.height !== h)) {
+      uvCanvasRef.current.width = w;
+      uvCanvasRef.current.height = h;
+    }
+    if (overlayCanvasRef.current && (overlayCanvasRef.current.width !== w || overlayCanvasRef.current.height !== h)) {
       overlayCanvasRef.current.width = w;
       overlayCanvasRef.current.height = h;
     }
@@ -141,7 +154,68 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     return { x: docX, y: docY };
   };
 
-  // Render main composite canvas
+  // 1. Render checkered transparency background behind UV and Cape
+  const renderCheckerboard = useCallback(() => {
+    const canvas = checkerCanvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    const tileSize = Math.max(4, Math.min(16, Math.round(16 / dimensions.scale)));
+    for (let y = 0; y < canvas.height; y += tileSize) {
+      for (let x = 0; x < canvas.width; x += tileSize) {
+        ctx.fillStyle =
+          (Math.floor(x / tileSize) + Math.floor(y / tileSize)) % 2 === 0 ? '#1e293b' : '#0f172a';
+        ctx.fillRect(x, y, tileSize, tileSize);
+      }
+    }
+  }, [dimensions.scale]);
+
+  // 2. Render UV Guides (BEHIND cape pixels; visible only through transparent pixels)
+  const renderUVGuides = useCallback(() => {
+    const canvas = uvCanvasRef.current;
+    if (!canvas || !containerRef.current) return;
+    syncViewportCanvases();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const containerW = canvas.width;
+    const containerH = canvas.height;
+    ctx.clearRect(0, 0, containerW, containerH);
+
+    if (!showUVGuides) return;
+
+    const faces = getScaledUVFaces(dimensions.scale);
+    for (const face of faces) {
+      const fx = pan.x + face.x * zoom;
+      const fy = pan.y + face.y * zoom;
+      const fw = face.width * zoom;
+      const fh = face.height * zoom;
+
+      // Skip if outside viewport
+      if (fx + fw < 0 || fx > containerW || fy + fh < 0 || fy > containerH) continue;
+
+      // Face background
+      ctx.fillStyle = face.color + '2b';
+      ctx.fillRect(fx, fy, fw, fh);
+
+      // Face border
+      ctx.strokeStyle = face.color;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(fx, fy, fw, fh);
+
+      // Label if face is big enough
+      if (fw > 30 && fh > 14) {
+        ctx.font = 'bold 10px monospace';
+        ctx.fillStyle = face.color;
+        ctx.fillText(face.label.split(' ')[0], fx + 4, fy + 12);
+      }
+    }
+  }, [showUVGuides, dimensions.scale, pan.x, pan.y, zoom, syncViewportCanvases]);
+
+  // 3. Render main composite canvas (Cape pixels sit on top of UV guides)
   const renderDisplay = useCallback(() => {
     const canvas = displayCanvasRef.current;
     if (!canvas) return;
@@ -151,17 +225,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw checkered transparency background
-    const tileSize = Math.max(4, Math.min(16, Math.round(16 / dimensions.scale)));
-    for (let y = 0; y < canvas.height; y += tileSize) {
-      for (let x = 0; x < canvas.width; x += tileSize) {
-        ctx.fillStyle =
-          (Math.floor(x / tileSize) + Math.floor(y / tileSize)) % 2 === 0 ? '#1e293b' : '#0f172a';
-        ctx.fillRect(x, y, tileSize, tileSize);
-      }
-    }
-
-    // Draw composited layers
+    // Draw composited layers (transparent where unpainted, letting UV guides show through)
     const compositeCanvas = doc.composite();
     ctx.drawImage(compositeCanvas, 0, 0);
 
@@ -173,13 +237,13 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         Math.round(selectionState.floatingY)
       );
     }
-  }, [doc, selectionState, dimensions.scale]);
+  }, [doc, selectionState]);
 
-  // Render viewport-fixed overlay (Grid, UV guides, Selection Box, Tool Previews)
+  // 4. Render viewport-fixed overlay (Grid, Selection Box, Tool Previews)
   const renderOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current;
     if (!canvas || !containerRef.current) return;
-    syncOverlaySize();
+    syncViewportCanvases();
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
@@ -220,37 +284,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       ctx.stroke();
     }
 
-    // 2. UV Guides
-    if (showUVGuides) {
-      const faces = getScaledUVFaces(dimensions.scale);
-      for (const face of faces) {
-        const fx = pan.x + face.x * zoom;
-        const fy = pan.y + face.y * zoom;
-        const fw = face.width * zoom;
-        const fh = face.height * zoom;
-
-        // Skip if outside viewport
-        if (fx + fw < 0 || fx > containerW || fy + fh < 0 || fy > containerH) continue;
-
-        // Face background
-        ctx.fillStyle = face.color + '22';
-        ctx.fillRect(fx, fy, fw, fh);
-
-        // Face border
-        ctx.strokeStyle = face.color;
-        ctx.lineWidth = 2;
-        ctx.strokeRect(fx, fy, fw, fh);
-
-        // Label if face is big enough
-        if (fw > 30 && fh > 14) {
-          ctx.font = 'bold 10px monospace';
-          ctx.fillStyle = face.color;
-          ctx.fillText(face.label.split(' ')[0], fx + 4, fy + 12);
-        }
-      }
-    }
-
-    // 3. Selection Rect outline (marching ants style)
+    // 2. Selection Rect outline (marching ants style)
     if (selectionState.rect) {
       const { x, y, width, height } = selectionState.rect;
       const rx = pan.x + (selectionState.isFloating ? selectionState.floatingX : x) * zoom;
@@ -265,13 +299,15 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       ctx.strokeRect(rx, ry, rw, rh);
       ctx.restore();
     }
-  }, [showGrid, showUVGuides, zoom, pan, dimensions, selectionState, syncOverlaySize]);
+  }, [showGrid, zoom, pan, dimensions, selectionState, syncViewportCanvases]);
 
   // Redraw when doc, zoom, pan or version changes
   useEffect(() => {
+    renderCheckerboard();
+    renderUVGuides();
     renderDisplay();
     renderOverlay();
-  }, [renderDisplay, renderOverlay, version, zoom, pan]);
+  }, [renderCheckerboard, renderUVGuides, renderDisplay, renderOverlay, version, zoom, pan]);
 
   // Pointer Events
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -333,12 +369,41 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         onCommitChange('Preenchimento', primaryColor);
       }
       isDrawingRef.current = false;
-    } else if (effectiveTool === 'move' && selectionState.isFloating) {
-      // Start dragging floating selection
-      strokeStartRef.current = {
-        x: coords.x - selectionState.floatingX,
-        y: coords.y - selectionState.floatingY,
-      };
+    } else if (effectiveTool === 'move') {
+      if (selectionState.rect || selectionState.isFloating) {
+        // Selection movement
+        isMovingSelectionRef.current = true;
+        hasModifiedRef.current = false;
+
+        if (!selectionState.isFloating && selectionState.rect) {
+          // Lift selection from active layer into floating canvas
+          const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionState.rect, true);
+          onUpdateSelection({
+            rect: { ...selectionState.rect },
+            floatingCanvas: extracted,
+            floatingX: selectionState.rect.x,
+            floatingY: selectionState.rect.y,
+            isFloating: true,
+          });
+          moveDragOffsetRef.current = {
+            x: coords.x - selectionState.rect.x,
+            y: coords.y - selectionState.rect.y,
+          };
+        } else if (selectionState.isFloating) {
+          moveDragOffsetRef.current = {
+            x: coords.x - selectionState.floatingX,
+            y: coords.y - selectionState.floatingY,
+          };
+        }
+        renderDisplay();
+        doc.notifyUpdate();
+      } else {
+        // Move current layer (no selection)
+        isMovingLayerRef.current = true;
+        hasModifiedRef.current = false;
+        layerDragStartRef.current = coords;
+        layerDragSnapshotRef.current = DrawingEngine.cloneCanvas(activeLayer.canvas);
+      }
     }
   };
 
@@ -360,6 +425,37 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     const activeLayer = doc.getActiveLayer();
     const isRightClick = activeButtonRef.current === 2;
     const effectiveTool = isRightClick ? 'eraser' : currentTool;
+
+    if (effectiveTool === 'move') {
+      if (isMovingSelectionRef.current && (selectionState.floatingCanvas || selectionState.rect)) {
+        const newX = Math.round(coords.x - moveDragOffsetRef.current.x);
+        const newY = Math.round(coords.y - moveDragOffsetRef.current.y);
+        if (newX !== selectionState.floatingX || newY !== selectionState.floatingY) {
+          hasModifiedRef.current = true;
+          onUpdateSelection({
+            ...selectionState,
+            floatingX: newX,
+            floatingY: newY,
+            rect: selectionState.rect ? { ...selectionState.rect, x: newX, y: newY } : null,
+          });
+          renderDisplay();
+          doc.notifyUpdate();
+        }
+      } else if (isMovingLayerRef.current && layerDragStartRef.current && layerDragSnapshotRef.current) {
+        const dx = coords.x - layerDragStartRef.current.x;
+        const dy = coords.y - layerDragStartRef.current.y;
+        activeLayer.ctx.clearRect(0, 0, dimensions.width, dimensions.height);
+        try {
+          activeLayer.ctx.drawImage(layerDragSnapshotRef.current, dx, dy);
+        } catch {
+          // fallback
+        }
+        hasModifiedRef.current = dx !== 0 || dy !== 0;
+        renderDisplay();
+        doc.notifyUpdate();
+      }
+      return;
+    }
 
     if (effectiveTool === 'pencil' || effectiveTool === 'eraser') {
       const last = lastPixelRef.current || coords;
@@ -450,15 +546,6 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           height: maxY - minY + 1,
         },
       });
-    } else if (effectiveTool === 'move' && selectionState.isFloating && strokeStartRef.current) {
-      // Dragging floating canvas
-      onUpdateSelection({
-        ...selectionState,
-        floatingX: coords.x - strokeStartRef.current.x,
-        floatingY: coords.y - strokeStartRef.current.y,
-      });
-      renderDisplay();
-      doc.notifyUpdate();
     }
   };
 
@@ -476,6 +563,50 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     const activeLayer = doc.getActiveLayer();
     const isRightClick = activeButtonRef.current === 2;
     const effectiveTool = isRightClick ? 'eraser' : currentTool;
+
+    if (effectiveTool === 'move') {
+      if (isMovingSelectionRef.current) {
+        if (hasModifiedRef.current && selectionState.floatingCanvas) {
+          DrawingEngine.pasteSelection(
+            activeLayer.ctx,
+            selectionState.floatingCanvas,
+            selectionState.floatingX,
+            selectionState.floatingY
+          );
+          onCommitChange('Mover Seleção');
+          onUpdateSelection({
+            rect: {
+              x: selectionState.floatingX,
+              y: selectionState.floatingY,
+              width: selectionState.floatingCanvas.width,
+              height: selectionState.floatingCanvas.height,
+            },
+            floatingCanvas: null,
+            floatingX: 0,
+            floatingY: 0,
+            isFloating: false,
+          });
+        }
+        isMovingSelectionRef.current = false;
+        hasModifiedRef.current = false;
+      } else if (isMovingLayerRef.current) {
+        if (hasModifiedRef.current) {
+          onCommitChange('Mover Camada');
+        }
+        isMovingLayerRef.current = false;
+        layerDragSnapshotRef.current = null;
+        layerDragStartRef.current = null;
+        hasModifiedRef.current = false;
+      }
+
+      activeButtonRef.current = null;
+      strokeStartRef.current = null;
+      lastPixelRef.current = null;
+      renderDisplay();
+      renderOverlay();
+      doc.notifyUpdate();
+      return;
+    }
 
     if (start && coords && !isRightClick) {
       if (effectiveTool === 'line') {
@@ -573,6 +704,10 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         if (isDrawingRef.current) {
           isDrawingRef.current = false;
           activeButtonRef.current = null;
+          isMovingSelectionRef.current = false;
+          isMovingLayerRef.current = false;
+          layerDragSnapshotRef.current = null;
+          layerDragStartRef.current = null;
           renderDisplay();
           renderOverlay();
           doc.notifyUpdate();
@@ -592,9 +727,9 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           : 'default',
       }}
     >
-      {/* Texture Display Canvas (pixel-perfect GPU scaling) */}
+      {/* 1. Checkered Canvas (Behind UV and Cape) */}
       <canvas
-        ref={displayCanvasRef}
+        ref={checkerCanvasRef}
         width={dimensions.width}
         height={dimensions.height}
         style={{
@@ -606,10 +741,44 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           left: 0,
           boxShadow: '0 10px 40px rgba(0,0,0,0.8)',
           imageRendering: 'pixelated',
+          zIndex: 1,
+          pointerEvents: 'none',
         }}
       />
 
-      {/* Viewport-Fixed Overlay Canvas (Grid, UV Guides, Selection, Previews) */}
+      {/* 2. UV Guides Canvas (BEHIND cape pixels; visible only through transparent areas) */}
+      <canvas
+        ref={uvCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 2,
+          pointerEvents: 'none',
+        }}
+      />
+
+      {/* 3. Texture Display Canvas (Cape Pixels rendered ON TOP of UV guides) */}
+      <canvas
+        ref={displayCanvasRef}
+        width={dimensions.width}
+        height={dimensions.height}
+        style={{
+          width: dimensions.width * zoom,
+          height: dimensions.height * zoom,
+          transform: `translate(${pan.x}px, ${pan.y}px)`,
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          imageRendering: 'pixelated',
+          zIndex: 3,
+          pointerEvents: 'none',
+        }}
+      />
+
+      {/* 4. Viewport-Fixed Overlay Canvas (Grid, Selection Box, Tool Previews) */}
       <canvas
         ref={overlayCanvasRef}
         style={{
@@ -618,6 +787,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           left: 0,
           width: '100%',
           height: '100%',
+          zIndex: 4,
           pointerEvents: 'none',
         }}
       />

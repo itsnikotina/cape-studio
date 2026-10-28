@@ -1,15 +1,29 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { DocumentModel } from './core/DocumentModel';
 import { HistoryManager } from './core/HistoryManager';
-import { TextureImporter } from './core/TextureImporter';
+import { TextureImporter, type ImportValidationResult } from './core/TextureImporter';
 import { TextureExporter } from './core/TextureExporter';
 import { DrawingEngine, rgbaToHex } from './core/DrawingEngine';
 import type {
   ToolType,
   ColorRGBA,
   SelectionState,
+  SelectionRect,
   HistoryEntry,
 } from './types/editor';
+
+interface ClipboardData {
+  canvas: HTMLCanvasElement;
+  originRect?: SelectionRect;
+  isFullLayer: boolean;
+}
+
+interface ImportModalData {
+  file: File;
+  image: HTMLImageElement;
+  validation: ImportValidationResult;
+  hasUnsavedChanges: boolean;
+}
 
 import { Header } from './components/Header';
 import { ToolBar } from './components/ToolBar';
@@ -56,7 +70,8 @@ export const App: React.FC = () => {
     isFloating: false,
   });
 
-  const [copiedCanvas, setCopiedCanvas] = useState<HTMLCanvasElement | null>(null);
+  const [clipboard, setClipboard] = useState<ClipboardData | null>(null);
+  const [importModal, setImportModal] = useState<ImportModalData | null>(null);
 
   // Stroke snapshot before modification
   const strokeBeforeSnapshotRef = useRef<HistoryEntry | null>(null);
@@ -145,40 +160,21 @@ export const App: React.FC = () => {
     }, `Alterar resolução para ${newW}×${newH}`);
   };
 
-  // PNG Import
+  // PNG Import with confirmation and choice modal
   const handleImportFile = async (file: File) => {
     try {
       const { image, validation } = await TextureImporter.loadFromFile(file);
-
-      // Show warning modal if not standard HD or invalid
-      if (validation.warning) {
-        setWarningModal({
-          isOpen: true,
-          title: validation.isValid ? 'Aviso de Compatibilidade de Resolução' : 'Formato Não Padrão',
-          message: validation.warning,
-          recommendation: validation.recommendation,
-        });
-      }
-
-      recordAction(() => {
-        doc.setDimensions(
-          validation.width,
-          validation.height,
-          validation.scale,
-          !validation.isStandardHD
-        );
-        const activeLayer = doc.getActiveLayer();
-        activeLayer.ctx.clearRect(0, 0, validation.width, validation.height);
-        activeLayer.ctx.drawImage(image, 0, 0);
-      }, `Importar ${file.name}`);
-
-      const cleanName = file.name.replace(/\.[^/.]+$/, '');
-      setDocumentName(cleanName);
-      setExportFilename(cleanName);
+      const hasUnsavedChanges = historyStatus.canUndo || doc.layers.length > 1;
+      setImportModal({
+        file,
+        image,
+        validation,
+        hasUnsavedChanges,
+      });
     } catch (err: unknown) {
       setWarningModal({
         isOpen: true,
-        title: 'Erro ao Importar PNG',
+        title: 'Erro ao Importar Capa',
         message: err instanceof Error ? err.message : 'Falha ao processar arquivo PNG.',
       });
     }
@@ -190,49 +186,86 @@ export const App: React.FC = () => {
     setExportModal(false);
   };
 
-  // Selection actions
-  const handleCopySelection = () => {
-    if (!selectionState.rect) return;
+  // Selection & Layer Clipboard actions
+  const handleCopySelection = useCallback(() => {
     const activeLayer = doc.getActiveLayer();
-    const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionState.rect, false);
-    setCopiedCanvas(extracted);
-  };
+    if (selectionState.rect) {
+      const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionState.rect, false);
+      setClipboard({
+        canvas: extracted,
+        originRect: { ...selectionState.rect },
+        isFullLayer: false,
+      });
+    } else {
+      const fullCanvas = DrawingEngine.cloneCanvas(activeLayer.canvas);
+      setClipboard({
+        canvas: fullCanvas,
+        originRect: { x: 0, y: 0, width: doc.dimensions.width, height: doc.dimensions.height },
+        isFullLayer: true,
+      });
+    }
+  }, [doc, selectionState.rect]);
 
-  const handleCutSelection = () => {
-    if (!selectionState.rect) return;
-    recordAction(() => {
-      const activeLayer = doc.getActiveLayer();
-      const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionState.rect!, true);
-      setCopiedCanvas(extracted);
-    }, 'Recortar Seleção');
-  };
+  const handleCutSelection = useCallback(() => {
+    const activeLayer = doc.getActiveLayer();
+    if (selectionState.rect) {
+      recordAction(() => {
+        const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionState.rect!, true);
+        setClipboard({
+          canvas: extracted,
+          originRect: { ...selectionState.rect! },
+          isFullLayer: false,
+        });
+        setSelectionState({
+          rect: null,
+          floatingCanvas: null,
+          floatingX: 0,
+          floatingY: 0,
+          isFloating: false,
+        });
+      }, 'Recortar Seleção');
+    } else {
+      recordAction(() => {
+        const fullCanvas = DrawingEngine.cloneCanvas(activeLayer.canvas);
+        setClipboard({
+          canvas: fullCanvas,
+          originRect: { x: 0, y: 0, width: doc.dimensions.width, height: doc.dimensions.height },
+          isFullLayer: true,
+        });
+        activeLayer.ctx.clearRect(0, 0, doc.dimensions.width, doc.dimensions.height);
+      }, 'Recortar Camada');
+    }
+  }, [doc, selectionState.rect, recordAction]);
 
-  const handlePasteSelection = () => {
-    const source = copiedCanvas || selectionState.floatingCanvas;
-    if (!source) return;
+  const handlePasteSelection = useCallback(() => {
+    if (!clipboard || !clipboard.canvas) return;
+
+    const pasted = DrawingEngine.cloneCanvas(clipboard.canvas);
+    const pasteX = clipboard.originRect && !clipboard.isFullLayer ? clipboard.originRect.x : 0;
+    const pasteY = clipboard.originRect && !clipboard.isFullLayer ? clipboard.originRect.y : 0;
 
     setSelectionState({
       rect: {
-        x: 0,
-        y: 0,
-        width: source.width,
-        height: source.height,
+        x: pasteX,
+        y: pasteY,
+        width: pasted.width,
+        height: pasted.height,
       },
-      floatingCanvas: source,
-      floatingX: 0,
-      floatingY: 0,
+      floatingCanvas: pasted,
+      floatingX: pasteX,
+      floatingY: pasteY,
       isFloating: true,
     });
     setCurrentTool('move');
-  };
+  }, [clipboard]);
 
-  const handleFlipSelection = () => {
+  const handleFlipSelection = useCallback(() => {
     if (selectionState.isFloating && selectionState.floatingCanvas) {
       const flipped = DrawingEngine.flipHorizontally(selectionState.floatingCanvas);
-      setSelectionState({
-        ...selectionState,
+      setSelectionState((prev) => ({
+        ...prev,
         floatingCanvas: flipped,
-      });
+      }));
       doc.notifyUpdate();
       setVersion((v) => v + 1);
     } else if (selectionState.rect) {
@@ -242,7 +275,7 @@ export const App: React.FC = () => {
         const flipped = DrawingEngine.flipHorizontally(extracted);
 
         setSelectionState({
-          ...selectionState,
+          rect: { ...selectionState.rect! },
           floatingCanvas: flipped,
           floatingX: selectionState.rect!.x,
           floatingY: selectionState.rect!.y,
@@ -250,9 +283,9 @@ export const App: React.FC = () => {
         });
       }, 'Espelhar Seleção');
     }
-  };
+  }, [doc, selectionState, recordAction]);
 
-  const commitFloatingSelection = () => {
+  const commitFloatingSelection = useCallback(() => {
     if (selectionState.isFloating && selectionState.floatingCanvas) {
       recordAction(() => {
         const activeLayer = doc.getActiveLayer();
@@ -271,7 +304,7 @@ export const App: React.FC = () => {
       floatingY: 0,
       isFloating: false,
     });
-  };
+  }, [doc, selectionState, recordAction]);
 
   // Keyboard Shortcuts Refs for rock-solid event handling without stale closures
   const handleUndoRef = useRef(handleUndo);
@@ -280,6 +313,9 @@ export const App: React.FC = () => {
   const handleCutRef = useRef(handleCutSelection);
   const handlePasteRef = useRef(handlePasteSelection);
   const commitFloatingRef = useRef(commitFloatingSelection);
+  const currentToolRef = useRef(currentTool);
+  const selectionStateRef = useRef(selectionState);
+  const recordActionRef = useRef(recordAction);
 
   useEffect(() => {
     handleUndoRef.current = handleUndo;
@@ -288,12 +324,17 @@ export const App: React.FC = () => {
     handleCutRef.current = handleCutSelection;
     handlePasteRef.current = handlePasteSelection;
     commitFloatingRef.current = commitFloatingSelection;
+    currentToolRef.current = currentTool;
+    selectionStateRef.current = selectionState;
+    recordActionRef.current = recordAction;
   });
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ignore if typing in text inputs or textareas
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+      // Ignore if typing in text inputs, textareas, selects, or contenteditable
+      const target = e.target as HTMLElement;
+      const tag = target.tagName;
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(tag) || target.isContentEditable) {
         return;
       }
 
@@ -333,6 +374,46 @@ export const App: React.FC = () => {
         if (e.key.toLowerCase() === 'v') {
           e.preventDefault();
           handlePasteRef.current();
+          return;
+        }
+      }
+
+      // Arrow keys nudge when tool is 'move'
+      if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key) && currentToolRef.current === 'move') {
+        e.preventDefault();
+        const step = e.shiftKey ? 4 : 1;
+        const dx = e.key === 'ArrowLeft' ? -step : e.key === 'ArrowRight' ? step : 0;
+        const dy = e.key === 'ArrowUp' ? -step : e.key === 'ArrowDown' ? step : 0;
+
+        if (selectionStateRef.current.rect) {
+          recordActionRef.current(() => {
+            const activeLayer = doc.getActiveLayer();
+            const extracted = DrawingEngine.extractSelection(activeLayer.ctx, selectionStateRef.current.rect!, true);
+            const newX = selectionStateRef.current.rect!.x + dx;
+            const newY = selectionStateRef.current.rect!.y + dy;
+            DrawingEngine.pasteSelection(activeLayer.ctx, extracted, newX, newY);
+            setSelectionState({
+              rect: { ...selectionStateRef.current.rect!, x: newX, y: newY },
+              floatingCanvas: null,
+              floatingX: 0,
+              floatingY: 0,
+              isFloating: false,
+            });
+          }, 'Mover Seleção');
+        } else {
+          recordActionRef.current(() => {
+            const activeLayer = doc.getActiveLayer();
+            DrawingEngine.moveLayer(activeLayer.ctx, doc.dimensions.width, doc.dimensions.height, dx, dy);
+          }, 'Mover Camada');
+        }
+        return;
+      }
+
+      // Enter -> commit floating selection
+      if (e.key === 'Enter') {
+        if (selectionStateRef.current.isFloating) {
+          e.preventDefault();
+          commitFloatingRef.current();
           return;
         }
       }
@@ -385,7 +466,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [doc]);
 
   return (
     <div className="app-container">
@@ -590,6 +671,148 @@ export const App: React.FC = () => {
             <div className="modal-actions">
               <button className="btn btn-primary" onClick={() => setWarningModal(null)}>
                 OK, Continuar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Cape Modal */}
+      {importModal && (
+        <div className="modal-overlay" onClick={() => setImportModal(null)}>
+          <div className="modal-card" style={{ width: 500 }} onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 className="modal-title">Importar Capa Existente</h3>
+            </div>
+            <div className="modal-body">
+              <div style={{ display: 'flex', gap: 14, alignItems: 'center', marginBottom: 14 }}>
+                <div
+                  style={{
+                    width: 96,
+                    height: 48,
+                    borderRadius: 4,
+                    border: '1px solid var(--border-light)',
+                    background: '#0f172a',
+                    backgroundImage: 'radial-gradient(rgba(255,255,255,0.1) 1px, transparent 1px)',
+                    backgroundSize: '8px 8px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <img
+                    src={importModal.image.src}
+                    alt="Preview da capa"
+                    style={{
+                      maxWidth: '100%',
+                      maxHeight: '100%',
+                      imageRendering: 'pixelated',
+                    }}
+                  />
+                </div>
+                <div style={{ flex: 1, fontSize: '0.8rem' }}>
+                  <div style={{ fontWeight: 600, color: 'var(--text-primary)', marginBottom: 2 }}>
+                    {importModal.file.name}
+                  </div>
+                  <div>
+                    Resolução detectada:{' '}
+                    <strong style={{ color: 'var(--accent-color)' }}>
+                      {importModal.validation.width} × {importModal.validation.height}
+                    </strong>{' '}
+                    ({importModal.validation.scale}x {importModal.validation.isStandardHD ? 'HD Padrão' : 'Personalizada'})
+                  </div>
+                  <div style={{ color: 'var(--text-dim)', fontSize: '0.75rem', marginTop: 2 }}>
+                    Fundo transparente e pixels preservados sem suavização.
+                  </div>
+                </div>
+              </div>
+
+              {importModal.validation.warning && (
+                <div
+                  style={{
+                    background: 'rgba(234, 179, 8, 0.1)',
+                    border: '1px solid rgba(234, 179, 8, 0.3)',
+                    borderRadius: 6,
+                    padding: 8,
+                    fontSize: '0.78rem',
+                    color: '#facc15',
+                    marginBottom: 14,
+                  }}
+                >
+                  <div>⚠️ {importModal.validation.warning}</div>
+                  {importModal.validation.recommendation && (
+                    <div style={{ marginTop: 4, opacity: 0.9 }}>
+                      💡 {importModal.validation.recommendation}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {importModal.hasUnsavedChanges && (
+                <div
+                  style={{
+                    background: 'rgba(239, 68, 68, 0.1)',
+                    border: '1px solid rgba(239, 68, 68, 0.3)',
+                    borderRadius: 6,
+                    padding: 8,
+                    fontSize: '0.78rem',
+                    color: '#f87171',
+                    marginBottom: 14,
+                  }}
+                >
+                  ⚠️ A capa atual possui edições. Substituir a capa criará um novo documento com a resolução importada (você pode desfazer com Ctrl+Z).
+                </div>
+              )}
+
+              <p style={{ fontSize: '0.82rem', marginBottom: 6 }}>
+                Como deseja importar esta textura?
+              </p>
+            </div>
+            <div className="modal-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button className="btn" onClick={() => setImportModal(null)}>
+                Cancelar
+              </button>
+              <button
+                className="btn"
+                onClick={() => {
+                  const cleanName = importModal.file.name.replace(/\.[^/.]+$/, '');
+                  recordAction(() => {
+                    const newLayer = doc.addLayer(`Capa: ${cleanName}`);
+                    newLayer.ctx.imageSmoothingEnabled = false;
+                    newLayer.ctx.drawImage(importModal.image, 0, 0, doc.dimensions.width, doc.dimensions.height);
+                  }, `Importar como camada: ${importModal.file.name}`);
+                  setImportModal(null);
+                }}
+                title="Adiciona a imagem como uma nova camada acima das existentes"
+              >
+                Adicionar como Nova Camada
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  const cleanName = importModal.file.name.replace(/\.[^/.]+$/, '');
+                  recordAction(() => {
+                    doc.setDimensions(
+                      importModal.validation.width,
+                      importModal.validation.height,
+                      importModal.validation.scale,
+                      !importModal.validation.isStandardHD
+                    );
+                    doc.layers = [];
+                    const baseLayer = doc.createLayer('Capa Importada');
+                    baseLayer.ctx.clearRect(0, 0, importModal.validation.width, importModal.validation.height);
+                    baseLayer.ctx.drawImage(importModal.image, 0, 0);
+                    doc.layers.push(baseLayer);
+                    doc.activeLayerId = baseLayer.id;
+                  }, `Importar capa: ${importModal.file.name}`);
+                  setDocumentName(cleanName);
+                  setExportFilename(cleanName);
+                  setImportModal(null);
+                }}
+                title="Cria um novo documento com a resolução original da capa"
+              >
+                Substituir Capa Atual
               </button>
             </div>
           </div>

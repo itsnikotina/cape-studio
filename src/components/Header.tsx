@@ -177,10 +177,10 @@ export const Header: React.FC<HeaderProps> = ({
         <button
           className="btn"
           onClick={() => fileInputRef.current?.click()}
-          title="Importar textura PNG existente"
+          title="Importar capa existente (PNG 64×32 ou HD)"
         >
           <Upload size={14} />
-          <span>Importar PNG</span>
+          <span>Importar capa</span>
         </button>
 
         <button

@@ -128,13 +128,18 @@ function createMock2DContext(
       const srcH = src.height;
       let dx = 0;
       let dy = 0;
-      let dw = width;
-      let dh = height;
-      if (args.length >= 4) {
+      let dw = srcW;
+      let dh = srcH;
+      if (args.length === 2) {
         dx = args[0] || 0;
         dy = args[1] || 0;
-        dw = args[2] || width;
-        dh = args[3] || height;
+        dw = srcW;
+        dh = srcH;
+      } else if (args.length >= 4) {
+        dx = args[0] || 0;
+        dy = args[1] || 0;
+        dw = args[2] !== undefined ? args[2] : width;
+        dh = args[3] !== undefined ? args[3] : height;
       }
       const srcImg = srcCtx.getImageData(0, 0, srcW, srcH);
       for (let y = 0; y < dh; y++) {
@@ -145,11 +150,32 @@ function createMock2DContext(
           const dstX = dx + x;
           const dstY = dy + y;
           if (dstX >= 0 && dstX < width && dstY >= 0 && dstY < height) {
-            const dstIdx = (dstY * width + dstX) * 4;
-            buffer[dstIdx] = srcImg.data[srcIdx];
-            buffer[dstIdx + 1] = srcImg.data[srcIdx + 1];
-            buffer[dstIdx + 2] = srcImg.data[srcIdx + 2];
-            buffer[dstIdx + 3] = srcImg.data[srcIdx + 3];
+            const srcAlpha = srcImg.data[srcIdx + 3];
+            if (srcAlpha > 0) {
+              const dstIdx = (dstY * width + dstX) * 4;
+              if (srcAlpha === 255) {
+                buffer[dstIdx] = srcImg.data[srcIdx];
+                buffer[dstIdx + 1] = srcImg.data[srcIdx + 1];
+                buffer[dstIdx + 2] = srcImg.data[srcIdx + 2];
+                buffer[dstIdx + 3] = 255;
+              } else {
+                const a = srcAlpha / 255;
+                const da = buffer[dstIdx + 3] / 255;
+                const outA = a + da * (1 - a);
+                if (outA > 0) {
+                  buffer[dstIdx] = Math.round(
+                    (srcImg.data[srcIdx] * a + buffer[dstIdx] * da * (1 - a)) / outA
+                  );
+                  buffer[dstIdx + 1] = Math.round(
+                    (srcImg.data[srcIdx + 1] * a + buffer[dstIdx + 1] * da * (1 - a)) / outA
+                  );
+                  buffer[dstIdx + 2] = Math.round(
+                    (srcImg.data[srcIdx + 2] * a + buffer[dstIdx + 2] * da * (1 - a)) / outA
+                  );
+                  buffer[dstIdx + 3] = Math.round(outA * 255);
+                }
+              }
+            }
           }
         }
       }
@@ -395,7 +421,11 @@ export class DocumentModel {
     }
 
     const compCanvas = this._compositeCanvas;
-    const compCtx = compCanvas.getContext('2d', { willReadFrequently: true });
+    const realCtx = compCanvas.getContext('2d', { willReadFrequently: true });
+    const compCtx =
+      realCtx ||
+      (compCanvas as unknown as { __mock2dContext?: CanvasRenderingContext2D }).__mock2dContext ||
+      createMock2DContext(compCanvas, compCanvas.width, compCanvas.height);
     if (!compCtx) return compCanvas;
 
     compCtx.imageSmoothingEnabled = false;

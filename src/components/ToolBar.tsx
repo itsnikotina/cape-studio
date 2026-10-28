@@ -59,7 +59,7 @@ export const ToolBar: React.FC<ToolBarProps> = ({
       icon: <Circle size={18} fill="currentColor" />,
     },
     { id: 'select', name: 'Seleção Retangular', key: 'M', icon: <BoxSelect size={18} /> },
-    { id: 'move', name: 'Mover Seleção', key: 'V', icon: <Move size={18} /> },
+    { id: 'move', name: 'Mover Seleção ou Camada (V)', key: 'V', icon: <Move size={18} /> },
   ];
 
   return (
