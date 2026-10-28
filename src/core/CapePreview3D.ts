@@ -161,6 +161,12 @@ export function createCapeGeometry(): THREE.BufferGeometry {
   geom.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geom.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
 
+  // Rotate cape orientation 180° around Y-axis to match Minecraft model specification:
+  // Swaps front and back faces so the front and back correspond correctly to Minecraft cape rendering.
+  // Translating by (0, 0, 1) preserves bounding box depth in [0, 1], perfectly positioned behind the torso.
+  geom.rotateY(Math.PI);
+  geom.translate(0, 0, 1);
+
   return geom;
 }
 

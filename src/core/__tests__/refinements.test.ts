@@ -48,6 +48,42 @@ describe('Refinements & Bug Fixes Verification', () => {
         expect(v).toBeLessThanOrEqual(1);
       }
     });
+
+    it('correctly maps front UV (1..11) to outer face facing +Z and back UV (12..22) to inner face facing -Z (Minecraft 180° rotation)', () => {
+      const geom = createCapeGeometry();
+      const pos = geom.getAttribute('position');
+      const norm = geom.getAttribute('normal');
+      const uvs = geom.getAttribute('uv');
+
+      let foundOuterFace = false;
+      let foundInnerFace = false;
+
+      // Each face is 2 triangles = 6 vertices
+      for (let i = 0; i < pos.count; i += 6) {
+        const nz = norm.getZ(i);
+        const z = pos.getZ(i);
+        const u = uvs.getX(i);
+
+        // Outer face: normal pointing +Z, positioned at Z = 1
+        if (nz > 0.9 && Math.abs(z - 1) < 0.01) {
+          foundOuterFace = true;
+          // UV should be within front region: [1/64, 11/64] = [0.015625, 0.171875]
+          expect(u).toBeGreaterThanOrEqual(1 / 64 - 0.001);
+          expect(u).toBeLessThanOrEqual(11 / 64 + 0.001);
+        }
+
+        // Inner face: normal pointing -Z, positioned at Z = 0 (towards torso)
+        if (nz < -0.9 && Math.abs(z - 0) < 0.01) {
+          foundInnerFace = true;
+          // UV should be within back region: [12/64, 22/64] = [0.1875, 0.34375]
+          expect(u).toBeGreaterThanOrEqual(12 / 64 - 0.001);
+          expect(u).toBeLessThanOrEqual(22 / 64 + 0.001);
+        }
+      }
+
+      expect(foundOuterFace).toBe(true);
+      expect(foundInnerFace).toBe(true);
+    });
   });
 
   // 2. Texture Resizing with Nearest-Neighbor Scaling
