@@ -7,7 +7,7 @@ import type {
 } from '../types/editor';
 import type { DocumentModel } from '../core/DocumentModel';
 import { DrawingEngine } from '../core/DrawingEngine';
-import { getScaledUVFaces, getUVFaceAt } from '../core/UVLayout';
+import { getUVFaceAt, renderUVBackground, renderUVForeground } from '../core/UVLayout';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
 interface CanvasEditorProps {
@@ -45,8 +45,9 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const checkerCanvasRef = useRef<HTMLCanvasElement>(null);
-  const uvCanvasRef = useRef<HTMLCanvasElement>(null);
+  const uvBgCanvasRef = useRef<HTMLCanvasElement>(null);
   const displayCanvasRef = useRef<HTMLCanvasElement>(null);
+  const uvFgCanvasRef = useRef<HTMLCanvasElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
 
   // Zoom factor (visual multiplier, can be fractional for HD fit-to-screen)
@@ -128,9 +129,13 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     if (!containerRef.current) return;
     const w = containerRef.current.clientWidth;
     const h = containerRef.current.clientHeight;
-    if (uvCanvasRef.current && (uvCanvasRef.current.width !== w || uvCanvasRef.current.height !== h)) {
-      uvCanvasRef.current.width = w;
-      uvCanvasRef.current.height = h;
+    if (uvBgCanvasRef.current && (uvBgCanvasRef.current.width !== w || uvBgCanvasRef.current.height !== h)) {
+      uvBgCanvasRef.current.width = w;
+      uvBgCanvasRef.current.height = h;
+    }
+    if (uvFgCanvasRef.current && (uvFgCanvasRef.current.width !== w || uvFgCanvasRef.current.height !== h)) {
+      uvFgCanvasRef.current.width = w;
+      uvFgCanvasRef.current.height = h;
     }
     if (overlayCanvasRef.current && (overlayCanvasRef.current.width !== w || overlayCanvasRef.current.height !== h)) {
       overlayCanvasRef.current.width = w;
@@ -173,49 +178,29 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     }
   }, [dimensions.scale]);
 
-  // 2. Render UV Guides (BEHIND cape pixels; visible only through transparent pixels)
-  const renderUVGuides = useCallback(() => {
-    const canvas = uvCanvasRef.current;
+  // 2. Render UV Guides Background (Preenchimento sólido BEHIND cape pixels; visible through transparent areas)
+  const renderUVBg = useCallback(() => {
+    const canvas = uvBgCanvasRef.current;
     if (!canvas || !containerRef.current) return;
     syncViewportCanvases();
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const containerW = canvas.width;
-    const containerH = canvas.height;
-    ctx.clearRect(0, 0, containerW, containerH);
-
-    if (!showUVGuides) return;
-
-    const faces = getScaledUVFaces(dimensions.scale);
-    for (const face of faces) {
-      const fx = pan.x + face.x * zoom;
-      const fy = pan.y + face.y * zoom;
-      const fw = face.width * zoom;
-      const fh = face.height * zoom;
-
-      // Skip if outside viewport
-      if (fx + fw < 0 || fx > containerW || fy + fh < 0 || fy > containerH) continue;
-
-      // Face background
-      ctx.fillStyle = face.color + '2b';
-      ctx.fillRect(fx, fy, fw, fh);
-
-      // Face border
-      ctx.strokeStyle = face.color;
-      ctx.lineWidth = 2;
-      ctx.strokeRect(fx, fy, fw, fh);
-
-      // Label if face is big enough
-      if (fw > 30 && fh > 14) {
-        ctx.font = 'bold 10px monospace';
-        ctx.fillStyle = face.color;
-        ctx.fillText(face.label.split(' ')[0], fx + 4, fy + 12);
-      }
+    if (!showUVGuides) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
     }
+
+    renderUVBackground(ctx, dimensions.scale, {
+      panX: pan.x,
+      panY: pan.y,
+      zoom,
+      viewportWidth: canvas.width,
+      viewportHeight: canvas.height,
+    });
   }, [showUVGuides, dimensions.scale, pan.x, pan.y, zoom, syncViewportCanvases]);
 
-  // 3. Render main composite canvas (Cape pixels sit on top of UV guides)
+  // 3. Render main composite canvas (Cape pixels sit on top of UV background)
   const renderDisplay = useCallback(() => {
     const canvas = displayCanvasRef.current;
     if (!canvas) return;
@@ -225,7 +210,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     ctx.imageSmoothingEnabled = false;
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw composited layers (transparent where unpainted, letting UV guides show through)
+    // Draw composited layers (transparent where unpainted, letting UV background show through)
     const compositeCanvas = doc.composite();
     ctx.drawImage(compositeCanvas, 0, 0);
 
@@ -238,6 +223,28 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       );
     }
   }, [doc, selectionState]);
+
+  // 4. Render UV Guides Foreground (Contornos, bordas e nomes/rótulos ON TOP of cape pixels)
+  const renderUVFg = useCallback(() => {
+    const canvas = uvFgCanvasRef.current;
+    if (!canvas || !containerRef.current) return;
+    syncViewportCanvases();
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    if (!showUVGuides) {
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      return;
+    }
+
+    renderUVForeground(ctx, dimensions.scale, {
+      panX: pan.x,
+      panY: pan.y,
+      zoom,
+      viewportWidth: canvas.width,
+      viewportHeight: canvas.height,
+    });
+  }, [showUVGuides, dimensions.scale, pan.x, pan.y, zoom, syncViewportCanvases]);
 
   // 4. Render viewport-fixed overlay (Grid, Selection Box, Tool Previews)
   const renderOverlay = useCallback(() => {
@@ -301,13 +308,26 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     }
   }, [showGrid, zoom, pan, dimensions, selectionState, syncViewportCanvases]);
 
-  // Redraw when doc, zoom, pan or version changes
+  // Redraw when doc, zoom, pan, showUVGuides or version changes
   useEffect(() => {
     renderCheckerboard();
-    renderUVGuides();
+    renderUVBg();
     renderDisplay();
+    renderUVFg();
     renderOverlay();
-  }, [renderCheckerboard, renderUVGuides, renderDisplay, renderOverlay, version, zoom, pan]);
+  }, [renderCheckerboard, renderUVBg, renderDisplay, renderUVFg, renderOverlay, version, zoom, pan, showUVGuides]);
+
+  // Window resize handler to keep viewport-fixed canvases in sync
+  useEffect(() => {
+    const handleResize = () => {
+      syncViewportCanvases();
+      renderUVBg();
+      renderUVFg();
+      renderOverlay();
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [syncViewportCanvases, renderUVBg, renderUVFg, renderOverlay]);
 
   // Pointer Events
   const handlePointerDown = (e: React.PointerEvent) => {
@@ -746,9 +766,9 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         }}
       />
 
-      {/* 2. UV Guides Canvas (BEHIND cape pixels; visible only through transparent areas) */}
+      {/* 2. UV Guides Background Canvas (Preenchimento sólido BEHIND cape pixels; visible only through transparent areas) */}
       <canvas
-        ref={uvCanvasRef}
+        ref={uvBgCanvasRef}
         style={{
           position: 'absolute',
           top: 0,
@@ -760,7 +780,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         }}
       />
 
-      {/* 3. Texture Display Canvas (Cape Pixels rendered ON TOP of UV guides) */}
+      {/* 3. Texture Display Canvas (Cape Pixels rendered ON TOP of UV background fill) */}
       <canvas
         ref={displayCanvasRef}
         width={dimensions.width}
@@ -778,7 +798,21 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         }}
       />
 
-      {/* 4. Viewport-Fixed Overlay Canvas (Grid, Selection Box, Tool Previews) */}
+      {/* 4. UV Guides Foreground Canvas (Contornos/bordas e nomes/rótulos ON TOP of cape pixels) */}
+      <canvas
+        ref={uvFgCanvasRef}
+        style={{
+          position: 'absolute',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 4,
+          pointerEvents: 'none',
+        }}
+      />
+
+      {/* 5. Viewport-Fixed Overlay Canvas (Grid, Selection Box, Tool Previews) */}
       <canvas
         ref={overlayCanvasRef}
         style={{
@@ -787,7 +821,7 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           left: 0,
           width: '100%',
           height: '100%',
-          zIndex: 4,
+          zIndex: 5,
           pointerEvents: 'none',
         }}
       />
