@@ -9,6 +9,9 @@ import {
   Sparkles,
   SplitSquareVertical,
   HelpCircle,
+  Check,
+  AlertCircle,
+  Trash2,
 } from 'lucide-react';
 import type { DocumentDimensions } from '../types/editor';
 
@@ -29,6 +32,12 @@ interface HeaderProps {
   onToggleUVGuides: () => void;
   mirrorHorizontal: boolean;
   onToggleMirror: () => void;
+  autoSaveStatus?: {
+    type: 'idle' | 'unsaved' | 'saving' | 'saved' | 'error';
+    lastSavedAt: number | null;
+    errorMessage: string | null;
+  };
+  onClearAutoSave?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -48,6 +57,8 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleUVGuides,
   mirrorHorizontal,
   onToggleMirror,
+  autoSaveStatus,
+  onClearAutoSave,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -109,6 +120,51 @@ export const Header: React.FC<HeaderProps> = ({
           onChange={(e) => onDocumentNameChange(e.target.value)}
           title="Renomear capa"
         />
+
+        {/* Autosave Status Indicator */}
+        {autoSaveStatus && (
+          <div
+            className={`autosave-indicator autosave-${autoSaveStatus.type}`}
+            title={
+              autoSaveStatus.type === 'saving'
+                ? 'Gravando alterações no armazenamento local...'
+                : autoSaveStatus.type === 'saved'
+                ? `Salvo automaticamente${
+                    autoSaveStatus.lastSavedAt
+                      ? ` às ${new Date(autoSaveStatus.lastSavedAt).toLocaleTimeString()}`
+                      : ''
+                  } (IndexedDB)`
+                : autoSaveStatus.type === 'error'
+                ? `Erro ao salvar: ${autoSaveStatus.errorMessage || 'Falha de armazenamento'}`
+                : 'Salvamento automático ativo no navegador'
+            }
+          >
+            {autoSaveStatus.type === 'saving' && (
+              <>
+                <span className="dot dot-pulsing" />
+                <span>Salvando…</span>
+              </>
+            )}
+            {autoSaveStatus.type === 'saved' && (
+              <>
+                <Check size={12} color="#10b981" />
+                <span>Salvo</span>
+              </>
+            )}
+            {autoSaveStatus.type === 'unsaved' && (
+              <>
+                <span className="dot dot-dim" />
+                <span>Pendente…</span>
+              </>
+            )}
+            {autoSaveStatus.type === 'error' && (
+              <>
+                <AlertCircle size={12} color="#ef4444" />
+                <span>Erro ao salvar</span>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Center: Resolution selector & Visual Toggles */}
@@ -303,6 +359,34 @@ export const Header: React.FC<HeaderProps> = ({
                   </tr>
                 </tbody>
               </table>
+
+              <div style={{ marginTop: 20, paddingTop: 14, borderTop: '1px solid var(--border-color)' }}>
+                <h4 style={{ margin: '0 0 8px 0', fontSize: '0.85rem', color: '#38bdf8' }}>
+                  Salvamento Automático Local (IndexedDB)
+                </h4>
+                <p style={{ margin: '0 0 8px 0', fontSize: '0.78rem', color: 'var(--text-muted)', lineHeight: 1.5 }}>
+                  O CAPE STUDIO grava periodicamente suas alterações no armazenamento local do navegador sem exigir conexão com a internet.
+                  Caso feche a aba acidentalmente, você poderá restaurar seu progresso ao reabrir o site.
+                </p>
+                <p style={{ margin: '0 0 12px 0', fontSize: '0.75rem', color: 'var(--text-dim)', lineHeight: 1.4 }}>
+                  <strong>Limitações do navegador:</strong> Os dados são mantidos exclusivamente neste navegador e dispositivo. A navegação em modo anônimo (privado), a limpeza de dados do site ou a troca de dispositivo não preservam o salvamento local. Use sempre a opção <strong>Exportar PNG</strong> para guardar seus arquivos permanentemente.
+                </p>
+                {onClearAutoSave && (
+                  <button
+                    className="btn btn-secondary"
+                    style={{ fontSize: '0.75rem', color: '#ef4444', borderColor: '#ef444444' }}
+                    onClick={() => {
+                      if (window.confirm('Tem certeza de que deseja apagar o projeto de recuperação salvo localmente?')) {
+                        onClearAutoSave();
+                        setShowHelpModal(false);
+                      }
+                    }}
+                  >
+                    <Trash2 size={13} style={{ marginRight: 5 }} />
+                    Limpar Backup Local
+                  </button>
+                )}
+              </div>
             </div>
             <div className="modal-actions">
               <button className="btn btn-primary" onClick={() => setShowHelpModal(false)}>

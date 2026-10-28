@@ -4,6 +4,8 @@ import { HistoryManager } from './core/HistoryManager';
 import { TextureImporter, type ImportValidationResult } from './core/TextureImporter';
 import { TextureExporter } from './core/TextureExporter';
 import { DrawingEngine, rgbaToHex } from './core/DrawingEngine';
+import { AutoSaveManager, type AutoSaveStatus } from './core/AutoSaveManager';
+import { deserializeDocument, type SerializedProject } from './core/ProjectStorage';
 import type {
   ToolType,
   ColorRGBA,
@@ -39,6 +41,17 @@ export const App: React.FC = () => {
   const [doc] = useState(() => new DocumentModel(64, 32, 1));
   const historyRef = useRef<HistoryManager>(new HistoryManager(30));
   const [historyStatus, setHistoryStatus] = useState({ canUndo: false, canRedo: false });
+
+  // Autosave and Recovery state
+  const autoSaveManagerRef = useRef<AutoSaveManager>(new AutoSaveManager());
+  const [autoSaveStatus, setAutoSaveStatus] = useState<AutoSaveStatus>({
+    type: 'idle',
+    lastSavedAt: null,
+    errorMessage: null,
+    sequence: 0,
+  });
+  const [recoverableProject, setRecoverableProject] = useState<SerializedProject | null>(null);
+  const [confirmNewDocModal, setConfirmNewDocModal] = useState(false);
 
   // State
   const [documentName, setDocumentName] = useState('minha_capa');
@@ -97,6 +110,49 @@ export const App: React.FC = () => {
     });
   }, []);
 
+  // Check for auto-saved project on mount and subscribe to auto-save status
+  useEffect(() => {
+    const unsub = autoSaveManagerRef.current.subscribe(setAutoSaveStatus);
+    autoSaveManagerRef.current.loadRecoverableProject().then((project) => {
+      if (project && project.layers && project.layers.length > 0) {
+        setRecoverableProject(project);
+      }
+    });
+    return () => unsub();
+  }, []);
+
+  // Flush pending auto-save before closing the tab or window
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      autoSaveManagerRef.current.flush(doc, documentName);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [doc, documentName]);
+
+  const handleRestoreProject = (project: SerializedProject) => {
+    deserializeDocument(project, doc);
+    setDocumentName(project.name || 'minha_capa');
+    setExportFilename(project.name || 'minha_capa');
+    historyRef.current.clear();
+    historyRef.current.pushState(doc.createSnapshot('Projeto Restaurado'));
+    syncHistoryStatus();
+    doc.notifyUpdate();
+    setVersion((v) => v + 1);
+    setRecoverableProject(null);
+  };
+
+  const handleClearAutoSave = async () => {
+    await autoSaveManagerRef.current.clearRecoverableProject();
+    setRecoverableProject(null);
+  };
+
+  const handleDocumentNameChange = (name: string) => {
+    setDocumentName(name);
+    setExportFilename(name);
+    autoSaveManagerRef.current.scheduleSave(doc, name, 'Renomear');
+  };
+
   // Commit changes to history
   const commitChange = useCallback((description = 'Modificação', colorUsed?: ColorRGBA) => {
     if (strokeBeforeSnapshotRef.current) {
@@ -111,7 +167,8 @@ export const App: React.FC = () => {
     syncHistoryStatus();
     doc.notifyUpdate();
     setVersion((v) => v + 1);
-  }, [doc, syncHistoryStatus, recordRecentColor]);
+    autoSaveManagerRef.current.scheduleSave(doc, documentName, description);
+  }, [doc, documentName, syncHistoryStatus, recordRecentColor]);
 
   // Helper for atomic actions outside drag drawing (layer operations, resize, import, etc.)
   const recordAction = useCallback((action: () => void, description = 'Modificação') => {
@@ -121,7 +178,8 @@ export const App: React.FC = () => {
     syncHistoryStatus();
     doc.notifyUpdate();
     setVersion((v) => v + 1);
-  }, [doc, syncHistoryStatus]);
+    autoSaveManagerRef.current.scheduleSave(doc, documentName, description);
+  }, [doc, documentName, syncHistoryStatus]);
 
   // Undo / Redo
   const handleUndo = useCallback(() => {
@@ -132,8 +190,9 @@ export const App: React.FC = () => {
       syncHistoryStatus();
       doc.notifyUpdate();
       setVersion((v) => v + 1);
+      autoSaveManagerRef.current.scheduleSave(doc, documentName, 'Desfazer');
     }
-  }, [doc, syncHistoryStatus]);
+  }, [doc, documentName, syncHistoryStatus]);
 
   const handleRedo = useCallback(() => {
     const currentSnapshot = doc.createSnapshot('Current');
@@ -143,8 +202,9 @@ export const App: React.FC = () => {
       syncHistoryStatus();
       doc.notifyUpdate();
       setVersion((v) => v + 1);
+      autoSaveManagerRef.current.scheduleSave(doc, documentName, 'Refazer');
     }
-  }, [doc, syncHistoryStatus]);
+  }, [doc, documentName, syncHistoryStatus]);
 
   // Color picker handler - updates primaryColor only; does NOT record to recent colors
   const handleColorChange = (newColor: ColorRGBA) => {
@@ -473,7 +533,7 @@ export const App: React.FC = () => {
       {/* Top Header */}
       <Header
         documentName={documentName}
-        onDocumentNameChange={setDocumentName}
+        onDocumentNameChange={handleDocumentNameChange}
         dimensions={doc.dimensions}
         onResolutionChange={handleResolutionChange}
         canUndo={historyStatus.canUndo}
@@ -488,6 +548,8 @@ export const App: React.FC = () => {
         onToggleUVGuides={() => setShowUVGuides(!showUVGuides)}
         mirrorHorizontal={mirrorHorizontal}
         onToggleMirror={() => setMirrorHorizontal(!mirrorHorizontal)}
+        autoSaveStatus={autoSaveStatus}
+        onClearAutoSave={handleClearAutoSave}
       />
 
       {/* Main Workspace */}
@@ -813,6 +875,88 @@ export const App: React.FC = () => {
                 title="Cria um novo documento com a resolução original da capa"
               >
                 Substituir Capa Atual
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recovery Prompt Modal */}
+      {recoverableProject && (
+        <div className="modal-backdrop">
+          <div className="modal-content" style={{ maxWidth: 460 }}>
+            <div className="modal-header">
+              <h3>Projeto Recuperável Encontrado</h3>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Encontramos um projeto salvo automaticamente no armazenamento local deste navegador:
+              </p>
+              <div
+                style={{
+                  background: 'var(--bg-secondary)',
+                  border: '1px solid var(--border-color)',
+                  borderRadius: 6,
+                  padding: 12,
+                  fontSize: '0.82rem',
+                  lineHeight: 1.6,
+                  margin: '12px 0',
+                }}
+              >
+                <div><strong>Nome:</strong> {recoverableProject.name}</div>
+                <div><strong>Resolução:</strong> {recoverableProject.dimensions.width}×{recoverableProject.dimensions.height} ({recoverableProject.dimensions.scale}x)</div>
+                <div><strong>Camadas:</strong> {recoverableProject.layers.length} camada(s)</div>
+                <div><strong>Salvo em:</strong> {new Date(recoverableProject.updatedAt).toLocaleString()}</div>
+              </div>
+              <p style={{ fontSize: '0.78rem', color: 'var(--text-dim)', margin: 0 }}>
+                💡 O salvamento automático local (IndexedDB) funciona offline. Caso prefira continuar com uma capa nova, o projeto salvo continuará preservado no navegador.
+              </p>
+            </div>
+            <div className="modal-actions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
+              <button
+                className="btn"
+                onClick={() => setConfirmNewDocModal(true)}
+              >
+                Iniciar Documento Novo
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => handleRestoreProject(recoverableProject)}
+              >
+                Recuperar Projeto
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm New Document Modal */}
+      {confirmNewDocModal && (
+        <div className="modal-backdrop">
+          <div className="modal-content" style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <h3>Confirmar Novo Documento</h3>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                Deseja iniciar um documento novo sem recuperar o anterior?
+              </p>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
+                Seu projeto anterior continuará salvo no navegador e poderá ser recuperado posteriormente ou limpo através da tela de Ajuda.
+              </p>
+            </div>
+            <div className="modal-actions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn" onClick={() => setConfirmNewDocModal(false)}>
+                Voltar
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  setConfirmNewDocModal(false);
+                  setRecoverableProject(null);
+                }}
+              >
+                Continuar com Novo
               </button>
             </div>
           </div>

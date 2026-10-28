@@ -2,8 +2,9 @@ import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import type { ColorRGBA } from '../types/editor';
 import { hexToRgba, rgbaToHex, rgbToHsv, hsvToRgb } from '../core/DrawingEngine';
 import {
-  STORAGE_KEY_FAVORITES,
   loadSavedFavorites,
+  addFavoriteColor,
+  removeFavoriteColor,
   type FavoriteColor,
 } from '../core/FavoritesManager';
 import { Star, Plus, X } from 'lucide-react';
@@ -268,29 +269,14 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
   const handleAddFavorite = () => {
     const hex = rgbaToHex(currentColor).toUpperCase();
     const alpha = currentColor.a;
-    const exists = favorites.some(
-      (f) => f.hex.toUpperCase() === hex && f.alpha === alpha
-    );
-    if (!exists) {
-      const updated = [...favorites, { hex, alpha }];
-      setFavorites(updated);
-      try {
-        localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updated));
-      } catch {
-        // Storage fail graceful fallback
-      }
-    }
+    const { updated } = addFavoriteColor(favorites, { hex, alpha });
+    setFavorites(updated);
   };
 
   const handleRemoveFavorite = (index: number, e: React.MouseEvent) => {
     e.stopPropagation();
-    const updated = favorites.filter((_, idx) => idx !== index);
+    const updated = removeFavoriteColor(favorites, index);
     setFavorites(updated);
-    try {
-      localStorage.setItem(STORAGE_KEY_FAVORITES, JSON.stringify(updated));
-    } catch {
-      // Storage fail graceful fallback
-    }
   };
 
   const currentHex = rgbaToHex(currentColor);
