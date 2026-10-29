@@ -7,11 +7,15 @@ import {
   removeFavoriteColor,
   type FavoriteColor,
 } from '../core/FavoritesManager';
-import { Star, Plus, X } from 'lucide-react';
+import { Star, Plus, X, ArrowLeftRight } from 'lucide-react';
 
 interface ColorTrianglePickerProps {
   currentColor: ColorRGBA;
+  secondaryColor?: ColorRGBA;
+  activeColorSlot?: 'primary' | 'secondary';
+  onSelectSlot?: (slot: 'primary' | 'secondary') => void;
   onColorChange: (color: ColorRGBA) => void;
+  onSwapColors?: () => void;
   recentColors: string[];
 }
 
@@ -36,7 +40,11 @@ const MINECRAFT_CAPE_PRESETS = [
 
 export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
   currentColor,
+  secondaryColor,
+  activeColorSlot = 'primary',
+  onSelectSlot,
   onColorChange,
+  onSwapColors,
   recentColors,
 }) => {
   const triangleCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -318,11 +326,90 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
 
       {/* Color Swatch & Hex / Alpha Inputs */}
       <div className="color-picker-row">
-        <div
-          className="current-color-preview"
-          style={{ backgroundColor: currentHex }}
-          title={`Cor Atual: ${currentHex.toUpperCase()} (Alfa: ${currentColor.a})`}
-        />
+        <div style={{ display: 'flex', alignItems: 'center' }}>
+          {secondaryColor && onSelectSlot ? (
+            <div style={{ position: 'relative', width: 44, height: 38 }}>
+              {/* Secondary Color Swatch (behind) */}
+              <div
+                className={`secondary-color-preview ${activeColorSlot === 'secondary' ? 'active-slot' : ''}`}
+                style={{
+                  position: 'absolute',
+                  right: 0,
+                  bottom: 0,
+                  width: 24,
+                  height: 24,
+                  borderRadius: 4,
+                  backgroundColor: rgbaToHex(secondaryColor),
+                  cursor: 'pointer',
+                  border:
+                    activeColorSlot === 'secondary'
+                      ? '2px solid var(--accent-color)'
+                      : '1px solid var(--border-light)',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+                  zIndex: activeColorSlot === 'secondary' ? 2 : 1,
+                }}
+                onClick={() => onSelectSlot('secondary')}
+                title={`Cor Secundária: ${rgbaToHex(secondaryColor).toUpperCase()} (Alfa: ${secondaryColor.a}) - Clique para editar`}
+              />
+              {/* Primary Color Swatch (front) */}
+              <div
+                className={`primary-color-preview ${activeColorSlot === 'primary' ? 'active-slot' : ''}`}
+                style={{
+                  position: 'absolute',
+                  left: 0,
+                  top: 0,
+                  width: 26,
+                  height: 26,
+                  borderRadius: 4,
+                  backgroundColor: currentHex,
+                  cursor: 'pointer',
+                  border:
+                    activeColorSlot === 'primary'
+                      ? '2px solid var(--accent-color)'
+                      : '1px solid var(--border-light)',
+                  boxShadow: '0 2px 4px rgba(0,0,0,0.4)',
+                  zIndex: activeColorSlot === 'primary' ? 2 : 1,
+                }}
+                onClick={() => onSelectSlot('primary')}
+                title={`Cor Principal: ${currentHex.toUpperCase()} (Alfa: ${currentColor.a}) - Clique para editar`}
+              />
+              {/* Swap Button */}
+              {onSwapColors && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onSwapColors();
+                  }}
+                  style={{
+                    position: 'absolute',
+                    top: -4,
+                    right: -4,
+                    background: 'var(--bg-tertiary)',
+                    border: '1px solid var(--border-light)',
+                    color: 'var(--text-muted)',
+                    borderRadius: 4,
+                    padding: 2,
+                    cursor: 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 3,
+                  }}
+                  title="Inverter cores primária e secundária (X)"
+                >
+                  <ArrowLeftRight size={10} />
+                </button>
+              )}
+            </div>
+          ) : (
+            <div
+              className="current-color-preview"
+              style={{ backgroundColor: currentHex }}
+              title={`Cor Atual: ${currentHex.toUpperCase()} (Alfa: ${currentColor.a})`}
+            />
+          )}
+        </div>
 
         <div className="hex-input-group">
           <span className="hex-label">HEX & ALFA</span>

@@ -10,6 +10,7 @@ export type ToolType =
   | 'eraser'
   | 'dropper'
   | 'fill'
+  | 'gradient'
   | 'line'
   | 'rectangle'
   | 'rectangle-fill'
@@ -17,6 +18,14 @@ export type ToolType =
   | 'ellipse-fill'
   | 'select'
   | 'move';
+
+export type GradientType = 'linear' | 'radial' | 'angular' | 'reflected' | 'diamond';
+
+export interface GradientConfig {
+  type: GradientType;
+  opacity: number; // 0.0 to 1.0 (default 1.0)
+  reverse: boolean;
+}
 
 export interface CapeLayer {
   id: string;

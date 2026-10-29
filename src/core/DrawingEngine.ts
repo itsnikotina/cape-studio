@@ -1,4 +1,18 @@
-import type { ColorRGBA, SelectionRect } from '../types/editor';
+import type { ColorRGBA, SelectionRect, GradientConfig } from '../types/editor';
+
+export function isPointInSelection(
+  x: number,
+  y: number,
+  selection?: SelectionRect | null
+): boolean {
+  if (!selection) return true;
+  return (
+    x >= selection.x &&
+    x < selection.x + selection.width &&
+    y >= selection.y &&
+    y < selection.y + selection.height
+  );
+}
 
 export function hexToRgba(hex: string, alpha: number = 255): ColorRGBA {
   let clean = hex.replace('#', '');
@@ -108,8 +122,10 @@ export class DrawingEngine {
     x: number,
     y: number,
     color: ColorRGBA,
-    mode: 'draw' | 'erase' = 'draw'
+    mode: 'draw' | 'erase' = 'draw',
+    selection?: SelectionRect | null
   ): void {
+    if (selection && !isPointInSelection(x, y, selection)) return;
     if (mode === 'erase') {
       ctx.clearRect(x, y, 1, 1);
     } else {
@@ -143,13 +159,14 @@ export class DrawingEngine {
     color: ColorRGBA,
     mode: 'draw' | 'erase' = 'draw',
     mirrorHorizontal = false,
-    docWidth = 64
+    docWidth = 64,
+    selection?: SelectionRect | null
   ): void {
     const plot = (px: number, py: number) => {
-      this.setPixel(ctx, px, py, color, mode);
+      this.setPixel(ctx, px, py, color, mode, selection);
       if (mirrorHorizontal) {
         const mx = docWidth - 1 - px;
-        this.setPixel(ctx, mx, py, color, mode);
+        this.setPixel(ctx, mx, py, color, mode, selection);
       }
     };
 
@@ -179,7 +196,8 @@ export class DrawingEngine {
 
   /**
    * Flood fill (paint bucket) using efficient queue BFS
-   * Returns true if any pixel was filled, false if no change occurred
+   * Returns true if any pixel was filled, false if no change occurred.
+   * Respects selection mask if active.
    */
   static floodFill(
     ctx: CanvasRenderingContext2D,
@@ -187,9 +205,11 @@ export class DrawingEngine {
     startY: number,
     fillColor: ColorRGBA,
     width: number,
-    height: number
+    height: number,
+    selection?: SelectionRect | null
   ): boolean {
     if (startX < 0 || startX >= width || startY < 0 || startY >= height) return false;
+    if (selection && !isPointInSelection(startX, startY, selection)) return false;
 
     const imgData = ctx.getImageData(0, 0, width, height);
     const data = imgData.data;
@@ -253,31 +273,39 @@ export class DrawingEngine {
 
       data32[current] = fillU32;
 
-      // Check 4-connected neighbors
+      // Check 4-connected neighbors, strictly bounded within selection if present
       if (cx > 0) {
+        const nx = cx - 1;
+        const ny = cy;
         const n = current - 1;
-        if (!visited[n] && matchesTarget(n)) {
+        if ((!selection || isPointInSelection(nx, ny, selection)) && !visited[n] && matchesTarget(n)) {
           visited[n] = 1;
           queue[tail++] = n;
         }
       }
       if (cx < width - 1) {
+        const nx = cx + 1;
+        const ny = cy;
         const n = current + 1;
-        if (!visited[n] && matchesTarget(n)) {
+        if ((!selection || isPointInSelection(nx, ny, selection)) && !visited[n] && matchesTarget(n)) {
           visited[n] = 1;
           queue[tail++] = n;
         }
       }
       if (cy > 0) {
+        const nx = cx;
+        const ny = cy - 1;
         const n = current - width;
-        if (!visited[n] && matchesTarget(n)) {
+        if ((!selection || isPointInSelection(nx, ny, selection)) && !visited[n] && matchesTarget(n)) {
           visited[n] = 1;
           queue[tail++] = n;
         }
       }
       if (cy < height - 1) {
+        const nx = cx;
+        const ny = cy + 1;
         const n = current + width;
-        if (!visited[n] && matchesTarget(n)) {
+        if ((!selection || isPointInSelection(nx, ny, selection)) && !visited[n] && matchesTarget(n)) {
           visited[n] = 1;
           queue[tail++] = n;
         }
@@ -289,7 +317,7 @@ export class DrawingEngine {
   }
 
   /**
-   * Draw rectangle (stroke or filled)
+   * Draw rectangle (stroke or filled), strictly clipped to selection if active
    */
   static drawRectangle(
     ctx: CanvasRenderingContext2D,
@@ -298,7 +326,8 @@ export class DrawingEngine {
     x1: number,
     y1: number,
     color: ColorRGBA,
-    filled: boolean
+    filled: boolean,
+    selection?: SelectionRect | null
   ): void {
     const minX = Math.min(x0, x1);
     const maxX = Math.max(x0, x1);
@@ -310,20 +339,35 @@ export class DrawingEngine {
     ctx.fillStyle = `rgba(${color.r},${color.g},${color.b},${color.a / 255})`;
 
     if (filled) {
-      ctx.fillRect(minX, minY, width, height);
+      if (!selection) {
+        ctx.fillRect(minX, minY, width, height);
+      } else {
+        const clipX0 = Math.max(minX, selection.x);
+        const clipX1 = Math.min(maxX, selection.x + selection.width - 1);
+        const clipY0 = Math.max(minY, selection.y);
+        const clipY1 = Math.min(maxY, selection.y + selection.height - 1);
+        if (clipX1 >= clipX0 && clipY1 >= clipY0) {
+          ctx.fillRect(clipX0, clipY0, clipX1 - clipX0 + 1, clipY1 - clipY0 + 1);
+        }
+      }
     } else {
-      // Outline only
-      ctx.fillRect(minX, minY, width, 1); // top
-      ctx.fillRect(minX, maxY, width, 1); // bottom
-      if (height > 2) {
-        ctx.fillRect(minX, minY + 1, 1, height - 2); // left
-        ctx.fillRect(maxX, minY + 1, 1, height - 2); // right
+      // Outline only: check each pixel against selection
+      const plot = (px: number, py: number) => {
+        this.setPixel(ctx, px, py, color, 'draw', selection);
+      };
+      for (let x = minX; x <= maxX; x++) {
+        plot(x, minY);
+        plot(x, maxY);
+      }
+      for (let y = minY + 1; y < maxY; y++) {
+        plot(minX, y);
+        plot(maxX, y);
       }
     }
   }
 
   /**
-   * Midpoint Ellipse Algorithm for pixel-perfect ellipse
+   * Midpoint Ellipse Algorithm for pixel-perfect ellipse, strictly clipped to selection if active
    */
   static drawEllipse(
     ctx: CanvasRenderingContext2D,
@@ -332,7 +376,8 @@ export class DrawingEngine {
     x1: number,
     y1: number,
     color: ColorRGBA,
-    filled: boolean
+    filled: boolean,
+    selection?: SelectionRect | null
   ): void {
     const minX = Math.min(x0, x1);
     const maxX = Math.max(x0, x1);
@@ -345,7 +390,7 @@ export class DrawingEngine {
     const yc = minY + ry;
 
     if (rx <= 0 && ry <= 0) {
-      this.setPixel(ctx, xc, yc, color, 'draw');
+      this.setPixel(ctx, xc, yc, color, 'draw', selection);
       return;
     }
 
@@ -355,16 +400,26 @@ export class DrawingEngine {
       if (filled) {
         const spanLeft = xc - px;
         const spanRight = xc + px;
-        const spanWidth = spanRight - spanLeft + 1;
-        ctx.fillRect(spanLeft, yc + py, spanWidth, 1);
+        const fillRow = (rowY: number) => {
+          if (!selection) {
+            ctx.fillRect(spanLeft, rowY, spanRight - spanLeft + 1, 1);
+          } else if (rowY >= selection.y && rowY < selection.y + selection.height) {
+            const clipLeft = Math.max(spanLeft, selection.x);
+            const clipRight = Math.min(spanRight, selection.x + selection.width - 1);
+            if (clipRight >= clipLeft) {
+              ctx.fillRect(clipLeft, rowY, clipRight - clipLeft + 1, 1);
+            }
+          }
+        };
+        fillRow(yc + py);
         if (py !== 0) {
-          ctx.fillRect(spanLeft, yc - py, spanWidth, 1);
+          fillRow(yc - py);
         }
       } else {
-        ctx.fillRect(xc + px, yc + py, 1, 1);
-        ctx.fillRect(xc - px, yc + py, 1, 1);
-        ctx.fillRect(xc + px, yc - py, 1, 1);
-        ctx.fillRect(xc - px, yc - py, 1, 1);
+        this.setPixel(ctx, xc + px, yc + py, color, 'draw', selection);
+        this.setPixel(ctx, xc - px, yc + py, color, 'draw', selection);
+        this.setPixel(ctx, xc + px, yc - py, color, 'draw', selection);
+        this.setPixel(ctx, xc - px, yc - py, color, 'draw', selection);
       }
     };
 
@@ -410,6 +465,161 @@ export class DrawingEngine {
         d2 = d2 + dx - dy + rx * rx;
       }
     }
+  }
+
+  /**
+   * Apply gradient (Linear, Radial, Angular, Reflected, Diamond) between two points
+   * with alpha-aware interpolation, opacity modulation, and strict selection masking.
+   */
+  static applyGradient(
+    ctx: CanvasRenderingContext2D,
+    x0: number,
+    y0: number,
+    x1: number,
+    y1: number,
+    startColor: ColorRGBA,
+    endColor: ColorRGBA,
+    options: GradientConfig,
+    width: number,
+    height: number,
+    selection?: SelectionRect | null
+  ): boolean {
+    if (width <= 0 || height <= 0) return false;
+
+    const color0 = options.reverse ? endColor : startColor;
+    const color1 = options.reverse ? startColor : endColor;
+    const opacityFactor = Math.max(0, Math.min(1, options.opacity ?? 1.0));
+    if (opacityFactor <= 0) return false;
+
+    // Target pixel bounds (clamped by document dimensions and selection)
+    const minX = selection ? Math.max(0, Math.min(width, selection.x)) : 0;
+    const maxX = selection
+      ? Math.max(0, Math.min(width, selection.x + selection.width))
+      : width;
+    const minY = selection ? Math.max(0, Math.min(height, selection.y)) : 0;
+    const maxY = selection
+      ? Math.max(0, Math.min(height, selection.y + selection.height))
+      : height;
+
+    if (minX >= maxX || minY >= maxY) return false;
+
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const lenSq = dx * dx + dy * dy;
+    const len = Math.sqrt(lenSq);
+
+    const type = options.type;
+    const baseAngle = type === 'angular' ? Math.atan2(dy, dx) : 0;
+
+    const imgData = ctx.getImageData(0, 0, width, height);
+    const data = imgData.data;
+
+    let modified = false;
+
+    for (let py = minY; py < maxY; py++) {
+      for (let px = minX; px < maxX; px++) {
+        let t = 0;
+
+        if (len < 0.0001) {
+          t = 0;
+        } else {
+          switch (type) {
+            case 'linear': {
+              const proj = (px - x0) * dx + (py - y0) * dy;
+              t = Math.max(0, Math.min(1, proj / lenSq));
+              break;
+            }
+            case 'radial': {
+              const dist = Math.sqrt((px - x0) * (px - x0) + (py - y0) * (py - y0));
+              t = Math.max(0, Math.min(1, dist / len));
+              break;
+            }
+            case 'angular': {
+              let angle = Math.atan2(py - y0, px - x0) - baseAngle;
+              angle = ((angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
+              t = angle / (Math.PI * 2);
+              break;
+            }
+            case 'reflected': {
+              const proj = (px - x0) * dx + (py - y0) * dy;
+              t = Math.max(0, Math.min(1, Math.abs(proj) / lenSq));
+              break;
+            }
+            case 'diamond': {
+              const pX = px - x0;
+              const pY = py - y0;
+              const distParallel = Math.abs(pX * dx + pY * dy) / len;
+              const distPerp = Math.abs(-pX * dy + pY * dx) / len;
+              t = Math.max(0, Math.min(1, (distParallel + distPerp) / len));
+              break;
+            }
+          }
+        }
+
+        // Interpolate colors with proper premultiplied alpha
+        const a0 = color0.a;
+        const a1 = color1.a;
+        const outAlpha = (a0 + t * (a1 - a0)) * opacityFactor;
+
+        let r = 0;
+        let g = 0;
+        let b = 0;
+
+        if (a0 === 0 && a1 === 0) {
+          r = 0;
+          g = 0;
+          b = 0;
+        } else if (a0 === a1 && a0 === 255) {
+          r = Math.round(color0.r + t * (color1.r - color0.r));
+          g = Math.round(color0.g + t * (color1.g - color0.g));
+          b = Math.round(color0.b + t * (color1.b - color0.b));
+        } else {
+          const w0 = (1 - t) * a0;
+          const w1 = t * a1;
+          const sumW = w0 + w1;
+          if (sumW > 0) {
+            r = Math.round((color0.r * w0 + color1.r * w1) / sumW);
+            g = Math.round((color0.g * w0 + color1.g * w1) / sumW);
+            b = Math.round((color0.b * w0 + color1.b * w1) / sumW);
+          } else {
+            r = color0.r;
+            g = color0.g;
+            b = color0.b;
+          }
+        }
+
+        const srcA = Math.max(0, Math.min(255, Math.round(outAlpha)));
+        if (srcA === 0) continue;
+
+        // Composite onto existing destination pixel (Normal source-over)
+        const idx = (py * width + px) * 4;
+        const dstR = data[idx];
+        const dstG = data[idx + 1];
+        const dstB = data[idx + 2];
+        const dstA = data[idx + 3];
+
+        if (srcA === 255 || dstA === 0) {
+          data[idx] = r;
+          data[idx + 1] = g;
+          data[idx + 2] = b;
+          data[idx + 3] = srcA;
+        } else {
+          const sa = srcA / 255;
+          const da = dstA / 255;
+          const finalA = sa + da * (1 - sa);
+          data[idx] = Math.round((r * sa + dstR * da * (1 - sa)) / finalA);
+          data[idx + 1] = Math.round((g * sa + dstG * da * (1 - sa)) / finalA);
+          data[idx + 2] = Math.round((b * sa + dstB * da * (1 - sa)) / finalA);
+          data[idx + 3] = Math.round(finalA * 255);
+        }
+        modified = true;
+      }
+    }
+
+    if (modified) {
+      ctx.putImageData(imgData, 0, 0);
+    }
+    return modified;
   }
 
   /**

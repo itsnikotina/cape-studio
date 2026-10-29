@@ -4,9 +4,10 @@ import type {
   DocumentDimensions,
   SelectionState,
   ToolType,
+  GradientConfig,
 } from '../types/editor';
 import type { DocumentModel } from '../core/DocumentModel';
-import { DrawingEngine } from '../core/DrawingEngine';
+import { DrawingEngine, isPointInSelection } from '../core/DrawingEngine';
 import { getUVFaceAt, renderUVBackground, renderUVForeground } from '../core/UVLayout';
 import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react';
 
@@ -15,6 +16,8 @@ interface CanvasEditorProps {
   currentTool: ToolType;
   onSelectTool: (tool: ToolType) => void;
   primaryColor: ColorRGBA;
+  secondaryColor: ColorRGBA;
+  gradientConfig: GradientConfig;
   onColorPick: (color: ColorRGBA) => void;
   showGrid: boolean;
   showUVGuides: boolean;
@@ -32,6 +35,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
   currentTool,
   onSelectTool,
   primaryColor,
+  secondaryColor,
+  gradientConfig,
   onColorPick,
   showGrid,
   showUVGuides,
@@ -75,25 +80,6 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
   // Space key tracker for panning
   const spacePressedRef = useRef(false);
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
-        spacePressedRef.current = true;
-      }
-    };
-    const handleKeyUp = (e: KeyboardEvent) => {
-      if (e.code === 'Space') {
-        spacePressedRef.current = false;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
-  }, []);
 
   // Fit to screen helper (supports HD resolutions like 1024x512 seamlessly)
   const fitToScreen = useCallback(() => {
@@ -329,6 +315,36 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     return () => window.removeEventListener('resize', handleResize);
   }, [syncViewportCanvases, renderUVBg, renderUVFg, renderOverlay]);
 
+  // Space key tracker for panning & Escape to cancel active drawing
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Space' && !['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement).tagName)) {
+        spacePressedRef.current = true;
+      }
+      if (e.key === 'Escape' && isDrawingRef.current) {
+        isDrawingRef.current = false;
+        strokeStartRef.current = null;
+        lastPixelRef.current = null;
+        hasModifiedRef.current = false;
+        activeButtonRef.current = null;
+        renderOverlay();
+        renderDisplay();
+        doc.notifyUpdate();
+      }
+    };
+    const handleKeyUp = (e: KeyboardEvent) => {
+      if (e.code === 'Space') {
+        spacePressedRef.current = false;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, [renderOverlay, renderDisplay, doc]);
+
   // Pointer Events
   const handlePointerDown = (e: React.PointerEvent) => {
     // Middle click or Space key triggers Pan
@@ -356,15 +372,16 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
     // Right click is ALWAYS eraser
     const isRightClick = e.button === 2;
     const effectiveTool = isRightClick ? 'eraser' : currentTool;
+    const activeSelection = !selectionState.isFloating ? selectionState.rect : null;
 
     if (effectiveTool === 'pencil' || effectiveTool === 'eraser') {
       const mode = effectiveTool === 'eraser' ? 'erase' : 'draw';
-      DrawingEngine.setPixel(activeLayer.ctx, coords.x, coords.y, primaryColor, mode);
+      DrawingEngine.setPixel(activeLayer.ctx, coords.x, coords.y, primaryColor, mode, activeSelection);
       if (mirrorHorizontal) {
         const mx = dimensions.width - 1 - coords.x;
-        DrawingEngine.setPixel(activeLayer.ctx, mx, coords.y, primaryColor, mode);
+        DrawingEngine.setPixel(activeLayer.ctx, mx, coords.y, primaryColor, mode, activeSelection);
       }
-      hasModifiedRef.current = true;
+      hasModifiedRef.current = !activeSelection || isPointInSelection(coords.x, coords.y, activeSelection);
       renderDisplay();
       doc.notifyUpdate(); // Live 3D update as you draw!
     } else if (effectiveTool === 'dropper') {
@@ -381,7 +398,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         coords.y,
         primaryColor,
         dimensions.width,
-        dimensions.height
+        dimensions.height,
+        activeSelection
       );
       if (changed) {
         renderDisplay();
@@ -477,6 +495,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       return;
     }
 
+    const activeSelection = !selectionState.isFloating ? selectionState.rect : null;
+
     if (effectiveTool === 'pencil' || effectiveTool === 'eraser') {
       const last = lastPixelRef.current || coords;
       const mode = effectiveTool === 'eraser' ? 'erase' : 'draw';
@@ -489,7 +509,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
         primaryColor,
         mode,
         mirrorHorizontal,
-        dimensions.width
+        dimensions.width,
+        activeSelection
       );
       lastPixelRef.current = coords;
       hasModifiedRef.current = true;
@@ -500,9 +521,10 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       effectiveTool === 'rectangle' ||
       effectiveTool === 'rectangle-fill' ||
       effectiveTool === 'ellipse' ||
-      effectiveTool === 'ellipse-fill'
+      effectiveTool === 'ellipse-fill' ||
+      effectiveTool === 'gradient'
     ) {
-      // Preview shape on overlay canvas
+      // Preview shape or gradient on overlay canvas
       renderOverlay();
       const oCanvas = overlayCanvasRef.current;
       if (!oCanvas || !strokeStartRef.current) return;
@@ -512,44 +534,104 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       const p0 = strokeStartRef.current;
       const p1 = coords;
 
-      oCtx.save();
-      // Transform preview to viewport coordinates
-      oCtx.translate(pan.x, pan.y);
-      oCtx.scale(zoom, zoom);
-      if (effectiveTool === 'line') {
-        DrawingEngine.drawLine(
-          oCtx,
-          p0.x,
-          p0.y,
-          p1.x,
-          p1.y,
-          primaryColor,
-          'draw',
-          mirrorHorizontal,
-          dimensions.width
-        );
-      } else if (effectiveTool === 'rectangle' || effectiveTool === 'rectangle-fill') {
-        DrawingEngine.drawRectangle(
-          oCtx,
-          p0.x,
-          p0.y,
-          p1.x,
-          p1.y,
-          primaryColor,
-          effectiveTool === 'rectangle-fill'
-        );
-      } else if (effectiveTool === 'ellipse' || effectiveTool === 'ellipse-fill') {
-        DrawingEngine.drawEllipse(
-          oCtx,
-          p0.x,
-          p0.y,
-          p1.x,
-          p1.y,
-          primaryColor,
-          effectiveTool === 'ellipse-fill'
-        );
+      if (effectiveTool === 'gradient') {
+        const previewCanvas = document.createElement('canvas');
+        previewCanvas.width = dimensions.width;
+        previewCanvas.height = dimensions.height;
+        const pCtx = previewCanvas.getContext('2d');
+        if (pCtx) {
+          DrawingEngine.applyGradient(
+            pCtx,
+            p0.x,
+            p0.y,
+            p1.x,
+            p1.y,
+            primaryColor,
+            secondaryColor,
+            gradientConfig,
+            dimensions.width,
+            dimensions.height,
+            activeSelection
+          );
+          oCtx.save();
+          oCtx.translate(pan.x, pan.y);
+          oCtx.scale(zoom, zoom);
+          oCtx.imageSmoothingEnabled = false;
+          oCtx.drawImage(previewCanvas, 0, 0);
+          oCtx.restore();
+        }
+
+        // Draw interactive vector guide line
+        oCtx.save();
+        const rx0 = pan.x + (p0.x + 0.5) * zoom;
+        const ry0 = pan.y + (p0.y + 0.5) * zoom;
+        const rx1 = pan.x + (p1.x + 0.5) * zoom;
+        const ry1 = pan.y + (p1.y + 0.5) * zoom;
+
+        oCtx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
+        oCtx.lineWidth = 1.5;
+        oCtx.setLineDash([4, 4]);
+        oCtx.beginPath();
+        oCtx.moveTo(rx0, ry0);
+        oCtx.lineTo(rx1, ry1);
+        oCtx.stroke();
+
+        oCtx.setLineDash([]);
+        oCtx.fillStyle = '#38bdf8';
+        oCtx.beginPath();
+        oCtx.arc(rx0, ry0, 3.5, 0, Math.PI * 2);
+        oCtx.fill();
+        oCtx.stroke();
+
+        oCtx.fillStyle = '#f43f5e';
+        oCtx.beginPath();
+        oCtx.arc(rx1, ry1, 3.5, 0, Math.PI * 2);
+        oCtx.fill();
+        oCtx.stroke();
+        oCtx.restore();
+      } else {
+        oCtx.save();
+        // Transform preview to viewport coordinates
+        oCtx.translate(pan.x, pan.y);
+        oCtx.scale(zoom, zoom);
+        if (effectiveTool === 'line') {
+          DrawingEngine.drawLine(
+            oCtx,
+            p0.x,
+            p0.y,
+            p1.x,
+            p1.y,
+            primaryColor,
+            'draw',
+            mirrorHorizontal,
+            dimensions.width,
+            activeSelection
+          );
+        } else if (effectiveTool === 'rectangle' || effectiveTool === 'rectangle-fill') {
+          DrawingEngine.drawRectangle(
+            oCtx,
+            p0.x,
+            p0.y,
+            p1.x,
+            p1.y,
+            primaryColor,
+            effectiveTool === 'rectangle-fill',
+            activeSelection
+          );
+        } else if (effectiveTool === 'ellipse' || effectiveTool === 'ellipse-fill') {
+          DrawingEngine.drawEllipse(
+            oCtx,
+            p0.x,
+            p0.y,
+            p1.x,
+            p1.y,
+            primaryColor,
+            effectiveTool === 'ellipse-fill',
+            activeSelection
+          );
+        }
+        oCtx.restore();
       }
-      oCtx.restore();
     } else if (effectiveTool === 'select' && strokeStartRef.current) {
       // Preview selection box
       const minX = Math.min(strokeStartRef.current.x, coords.x);
@@ -628,6 +710,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
       return;
     }
 
+    const activeSelection = !selectionState.isFloating ? selectionState.rect : null;
+
     if (start && coords && !isRightClick) {
       if (effectiveTool === 'line') {
         DrawingEngine.drawLine(
@@ -639,7 +723,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           primaryColor,
           'draw',
           mirrorHorizontal,
-          dimensions.width
+          dimensions.width,
+          activeSelection
         );
         hasModifiedRef.current = true;
       } else if (effectiveTool === 'rectangle' || effectiveTool === 'rectangle-fill') {
@@ -650,7 +735,8 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           coords.x,
           coords.y,
           primaryColor,
-          effectiveTool === 'rectangle-fill'
+          effectiveTool === 'rectangle-fill',
+          activeSelection
         );
         hasModifiedRef.current = true;
       } else if (effectiveTool === 'ellipse' || effectiveTool === 'ellipse-fill') {
@@ -661,9 +747,25 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
           coords.x,
           coords.y,
           primaryColor,
-          effectiveTool === 'ellipse-fill'
+          effectiveTool === 'ellipse-fill',
+          activeSelection
         );
         hasModifiedRef.current = true;
+      } else if (effectiveTool === 'gradient') {
+        const changed = DrawingEngine.applyGradient(
+          activeLayer.ctx,
+          start.x,
+          start.y,
+          coords.x,
+          coords.y,
+          primaryColor,
+          secondaryColor,
+          gradientConfig,
+          dimensions.width,
+          dimensions.height,
+          activeSelection
+        );
+        hasModifiedRef.current = changed;
       }
     }
 
@@ -677,10 +779,13 @@ export const CanvasEditor: React.FC<CanvasEditorProps> = ({
 
     if (hasModifiedRef.current) {
       const colorUsed = !isRightClick && effectiveTool !== 'eraser' ? primaryColor : undefined;
-      onCommitChange(
-        isRightClick ? 'Borracha (Botão Direito)' : `Desenho (${effectiveTool})`,
-        colorUsed
-      );
+      const description =
+        effectiveTool === 'gradient'
+          ? `Degradê (${gradientConfig.type})`
+          : isRightClick
+          ? 'Borracha (Botão Direito)'
+          : `Desenho (${effectiveTool})`;
+      onCommitChange(description, colorUsed);
       hasModifiedRef.current = false;
     }
   };

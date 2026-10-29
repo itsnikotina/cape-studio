@@ -12,6 +12,7 @@ import type {
   SelectionState,
   SelectionRect,
   HistoryEntry,
+  GradientConfig,
 } from './types/editor';
 
 interface ClipboardData {
@@ -30,6 +31,7 @@ interface ImportModalData {
 import { Header } from './components/Header';
 import { ToolBar } from './components/ToolBar';
 import { ColorTrianglePicker } from './components/ColorTrianglePicker';
+import { GradientOptionsBar } from './components/GradientOptionsBar';
 import { LayerManager } from './components/LayerManager';
 import { CanvasEditor } from './components/CanvasEditor';
 import { Preview3DPanel } from './components/Preview3DPanel';
@@ -59,6 +61,13 @@ export const App: React.FC = () => {
   const [documentName, setDocumentName] = useState('minha_capa');
   const [currentTool, setCurrentTool] = useState<ToolType>('pencil');
   const [primaryColor, setPrimaryColor] = useState<ColorRGBA>({ r: 176, g: 30, b: 40, a: 255 }); // Mojang Red
+  const [secondaryColor, setSecondaryColor] = useState<ColorRGBA>({ r: 255, g: 255, b: 255, a: 255 }); // Pure White
+  const [activeColorSlot, setActiveColorSlot] = useState<'primary' | 'secondary'>('primary');
+  const [gradientConfig, setGradientConfig] = useState<GradientConfig>({
+    type: 'linear',
+    opacity: 1.0,
+    reverse: false,
+  });
   const [recentColors, setRecentColors] = useState<string[]>(['#b01e28', '#ffffff', '#17dd62', '#ffac00']);
   const [showGrid, setShowGrid] = useState(true);
   const [showUVGuides, setShowUVGuides] = useState(true);
@@ -237,10 +246,21 @@ export const App: React.FC = () => {
     }
   }, [doc, documentName, syncHistoryStatus]);
 
-  // Color picker handler - updates primaryColor only; does NOT record to recent colors
+  // Color picker handler - updates active slot (primary or secondary)
   const handleColorChange = (newColor: ColorRGBA) => {
-    setPrimaryColor(newColor);
+    if (activeColorSlot === 'secondary') {
+      setSecondaryColor(newColor);
+    } else {
+      setPrimaryColor(newColor);
+    }
   };
+
+  const handleSwapColors = useCallback(() => {
+    setPrimaryColor((prevPrimary) => {
+      setSecondaryColor(prevPrimary);
+      return secondaryColor;
+    });
+  }, [secondaryColor]);
 
   // Resolution switch
   const handleResolutionChange = (scale: number, customW?: number, customH?: number) => {
@@ -547,7 +567,16 @@ export const App: React.FC = () => {
           break;
         case 'g':
           commitFloatingRef.current();
-          setCurrentTool('fill');
+          setCurrentTool(e.shiftKey ? 'gradient' : 'fill');
+          break;
+        case 'd':
+          commitFloatingRef.current();
+          setCurrentTool('gradient');
+          break;
+        case 'x':
+          if (!e.ctrlKey && !e.metaKey && !e.altKey) {
+            handleSwapColors();
+          }
           break;
         case 'l':
           commitFloatingRef.current();
@@ -573,7 +602,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [doc, showRecoveryModal, exportModal, warningModal, importModal]);
+  }, [doc, showRecoveryModal, exportModal, warningModal, importModal, handleSwapColors]);
 
   return (
     <div className="app-container">
@@ -622,8 +651,12 @@ export const App: React.FC = () => {
           />
 
           <ColorTrianglePicker
-            currentColor={primaryColor}
+            currentColor={activeColorSlot === 'secondary' ? secondaryColor : primaryColor}
+            secondaryColor={secondaryColor}
+            activeColorSlot={activeColorSlot}
+            onSelectSlot={setActiveColorSlot}
             onColorChange={handleColorChange}
+            onSwapColors={handleSwapColors}
             recentColors={recentColors}
           />
 
@@ -679,22 +712,35 @@ export const App: React.FC = () => {
         </aside>
 
         {/* Center: 2D Canvas Pixel Editor */}
-        <CanvasEditor
-          document={doc}
-          currentTool={currentTool}
-          onSelectTool={setCurrentTool}
-          primaryColor={primaryColor}
-          onColorPick={handleColorChange}
-          showGrid={showGrid}
-          showUVGuides={showUVGuides}
-          mirrorHorizontal={mirrorHorizontal}
-          dimensions={doc.dimensions}
-          onStartStroke={handleStartStroke}
-          onCommitChange={commitChange}
-          selectionState={selectionState}
-          onUpdateSelection={setSelectionState}
-          version={version}
-        />
+        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, height: '100%', position: 'relative' }}>
+          {currentTool === 'gradient' && (
+            <GradientOptionsBar
+              config={gradientConfig}
+              onChangeConfig={setGradientConfig}
+              primaryColor={primaryColor}
+              secondaryColor={secondaryColor}
+              onSwapColors={handleSwapColors}
+            />
+          )}
+          <CanvasEditor
+            document={doc}
+            currentTool={currentTool}
+            onSelectTool={setCurrentTool}
+            primaryColor={primaryColor}
+            secondaryColor={secondaryColor}
+            gradientConfig={gradientConfig}
+            onColorPick={handleColorChange}
+            showGrid={showGrid}
+            showUVGuides={showUVGuides}
+            mirrorHorizontal={mirrorHorizontal}
+            dimensions={doc.dimensions}
+            onStartStroke={handleStartStroke}
+            onCommitChange={commitChange}
+            selectionState={selectionState}
+            onUpdateSelection={setSelectionState}
+            version={version}
+          />
+        </div>
 
         {/* Right Panel: 3D Realtime Three.js Preview */}
         <Preview3DPanel document={doc} version={version} />

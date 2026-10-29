@@ -43,6 +43,22 @@ export const ToolBar: React.FC<ToolBarProps> = ({
     { id: 'eraser', name: 'Borracha (E)', key: 'E', icon: <Eraser size={18} /> },
     { id: 'dropper', name: 'Conta-gotas (I)', key: 'I', icon: <Pipette size={18} /> },
     { id: 'fill', name: 'Preenchimento (G)', key: 'G', icon: <PaintBucket size={18} /> },
+    {
+      id: 'gradient',
+      name: 'Degradê (D)',
+      key: 'D',
+      icon: (
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <defs>
+            <linearGradient id="toolGradIcon" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" stopColor="currentColor" stopOpacity="0.9" />
+              <stop offset="100%" stopColor="currentColor" stopOpacity="0.1" />
+            </linearGradient>
+          </defs>
+          <rect x="3" y="3" width="18" height="18" rx="3" fill="url(#toolGradIcon)" />
+        </svg>
+      ),
+    },
     { id: 'line', name: 'Linha (L)', key: 'L', icon: <Minus size={18} /> },
     { id: 'rectangle', name: 'Retângulo Contorno', key: 'U', icon: <Square size={18} /> },
     {
