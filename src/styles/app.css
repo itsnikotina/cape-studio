@@ -686,18 +686,43 @@ html, body, #root {
   color: var(--text-main);
 }
 
+/* Tool Properties Floating Overlay */
+.tool-properties-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  pointer-events: auto;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  background-color: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--border-light);
+  animation: toolOverlayFadeIn 0.15s ease-out;
+}
+
+@keyframes toolOverlayFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 /* Gradient Options Bar */
 .gradient-options-bar {
   display: flex;
   align-items: center;
   gap: 12px;
   padding: 6px 14px;
-  background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-color);
+  background-color: transparent;
+  border-bottom: none;
   font-size: 0.78rem;
   color: var(--text-main);
   flex-wrap: wrap;
-  z-index: 10;
 }
 
 .gradient-options-bar .btn.active {

@@ -260,6 +260,35 @@ export const App: React.FC = () => {
     setSecondaryColor(primaryColor);
   }, [primaryColor, secondaryColor]);
 
+  // Floating overlay for tool-specific properties (placed in overlay layer without shifting canvas layout)
+  const renderToolPropertiesOverlay = () => {
+    let content: React.ReactNode = null;
+
+    if (currentTool === 'gradient') {
+      content = (
+        <GradientOptionsBar
+          config={gradientConfig}
+          onChangeConfig={setGradientConfig}
+          primaryColor={primaryColor}
+          secondaryColor={secondaryColor}
+          onSwapColors={handleSwapColors}
+        />
+      );
+    }
+
+    if (!content) return null;
+
+    return (
+      <div
+        className="tool-properties-overlay"
+        data-testid="tool-properties-overlay"
+        onPointerDown={(e) => e.stopPropagation()}
+      >
+        {content}
+      </div>
+    );
+  };
+
   // Resolution switch
   const handleResolutionChange = (scale: number, customW?: number, customH?: number) => {
     const newW = customW || 64 * scale;
@@ -710,16 +739,18 @@ export const App: React.FC = () => {
         </aside>
 
         {/* Center: 2D Canvas Pixel Editor */}
-        <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, height: '100%', position: 'relative' }}>
-          {currentTool === 'gradient' && (
-            <GradientOptionsBar
-              config={gradientConfig}
-              onChangeConfig={setGradientConfig}
-              primaryColor={primaryColor}
-              secondaryColor={secondaryColor}
-              onSwapColors={handleSwapColors}
-            />
-          )}
+        <div
+          className="canvas-editor-container"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            flex: 1,
+            minWidth: 0,
+            height: '100%',
+            position: 'relative',
+          }}
+        >
+          {renderToolPropertiesOverlay()}
           <CanvasEditor
             document={doc}
             currentTool={currentTool}

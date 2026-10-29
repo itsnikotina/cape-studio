@@ -173,6 +173,7 @@ export const GradientOptionsBar: React.FC<GradientOptionsBarProps> = ({
           style={{ padding: '2px 8px', fontSize: '0.72rem', height: 26 }}
           onClick={onSwapColors}
           title="Inverter cores inicial e final (X)"
+          aria-label="Inverter cores inicial e final"
         >
           <ArrowLeftRight size={12} style={{ marginRight: 4 }} />
           Inverter
