@@ -10,8 +10,9 @@ import {
 import { Star, Plus, X, ArrowLeftRight } from 'lucide-react';
 
 interface ColorTrianglePickerProps {
-  currentColor: ColorRGBA;
+  primaryColor?: ColorRGBA;
   secondaryColor?: ColorRGBA;
+  currentColor?: ColorRGBA;
   activeColorSlot?: 'primary' | 'secondary';
   onSelectSlot?: (slot: 'primary' | 'secondary') => void;
   onColorChange: (color: ColorRGBA) => void;
@@ -39,8 +40,9 @@ const MINECRAFT_CAPE_PRESETS = [
 ];
 
 export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
-  currentColor,
+  primaryColor,
   secondaryColor,
+  currentColor,
   activeColorSlot = 'primary',
   onSelectSlot,
   onColorChange,
@@ -50,13 +52,21 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
   const triangleCanvasRef = useRef<HTMLCanvasElement>(null);
   const hueCanvasRef = useRef<HTMLCanvasElement>(null);
 
+  // Strictly decouple primary and secondary color states
+  const effectivePrimary: ColorRGBA = primaryColor ?? currentColor ?? { r: 176, g: 30, b: 40, a: 255 };
+  const effectiveSecondary: ColorRGBA = secondaryColor ?? { r: 255, g: 255, b: 255, a: 255 };
+
+  // Current active color slot being manipulated by the picker controls
+  const activeColor: ColorRGBA =
+    activeColorSlot === 'secondary' ? effectiveSecondary : effectivePrimary;
+
   // Favorites state
   const [favorites, setFavorites] = useState<FavoriteColor[]>(() => loadSavedFavorites());
 
-  // Derive HSV from current RGB
+  // Derive HSV from active color RGB
   const derivedHsv = useMemo(
-    () => rgbToHsv(currentColor.r, currentColor.g, currentColor.b),
-    [currentColor.r, currentColor.g, currentColor.b]
+    () => rgbToHsv(activeColor.r, activeColor.g, activeColor.b),
+    [activeColor.r, activeColor.g, activeColor.b]
   );
 
   // User-selected hue override (when saturated, defaults to derivedHsv.h)
@@ -64,7 +74,15 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
   const activeHue = userHue !== null ? userHue : derivedHsv.h;
 
   const [hexInputOverride, setHexInputOverride] = useState<string | null>(null);
-  const hexInput = hexInputOverride ?? rgbaToHex(currentColor).toUpperCase();
+  const hexInput = hexInputOverride ?? rgbaToHex(activeColor).toUpperCase();
+
+  // Reset hue and hex overrides when switching between primary and secondary slots
+  const [prevSlot, setPrevSlot] = useState(activeColorSlot);
+  if (prevSlot !== activeColorSlot) {
+    setPrevSlot(activeColorSlot);
+    setUserHue(null);
+    setHexInputOverride(null);
+  }
 
   // Triangle vertex coordinates (width: 260, height: 200 - expanded vertical space!)
   const A = { x: 130, y: 12 }; // Apex: Pure Hue
@@ -208,7 +226,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
     const newS = newV === 0 ? 0 : Math.max(0, Math.min(1, wA / newV));
 
     const rgb = hsvToRgb(activeHue, newS, newV);
-    const newColor: ColorRGBA = { ...rgb, a: currentColor.a };
+    const newColor: ColorRGBA = { ...rgb, a: activeColor.a };
     onColorChange(newColor);
     setHexInputOverride(null);
   };
@@ -240,7 +258,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
 
     setUserHue(newHue);
     const rgb = hsvToRgb(newHue, derivedHsv.s, derivedHsv.v);
-    const newColor: ColorRGBA = { ...rgb, a: currentColor.a };
+    const newColor: ColorRGBA = { ...rgb, a: activeColor.a };
     onColorChange(newColor);
     setHexInputOverride(null);
   };
@@ -266,7 +284,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
     if (!valStr.startsWith('#')) valStr = `#${valStr}`;
     setHexInputOverride(valStr.toUpperCase());
     if (/^#[0-9A-Fa-f]{6}$/.test(valStr)) {
-      const parsed = hexToRgba(valStr, currentColor.a);
+      const parsed = hexToRgba(valStr, activeColor.a);
       onColorChange(parsed);
       const hsv = rgbToHsv(parsed.r, parsed.g, parsed.b);
       setUserHue(hsv.h);
@@ -275,8 +293,8 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
 
   // Favorite actions
   const handleAddFavorite = () => {
-    const hex = rgbaToHex(currentColor).toUpperCase();
-    const alpha = currentColor.a;
+    const hex = rgbaToHex(activeColor).toUpperCase();
+    const alpha = activeColor.a;
     const { updated } = addFavoriteColor(favorites, { hex, alpha });
     setFavorites(updated);
   };
@@ -287,7 +305,9 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
     setFavorites(updated);
   };
 
-  const currentHex = rgbaToHex(currentColor);
+  const primaryHex = rgbaToHex(effectivePrimary);
+  const secondaryHex = rgbaToHex(effectiveSecondary);
+  const activeHex = rgbaToHex(activeColor);
 
   return (
     <div className="panel-section">
@@ -332,6 +352,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
               {/* Secondary Color Swatch (behind) */}
               <div
                 className={`secondary-color-preview ${activeColorSlot === 'secondary' ? 'active-slot' : ''}`}
+                data-testid="secondary-color-swatch"
                 style={{
                   position: 'absolute',
                   right: 0,
@@ -339,7 +360,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
                   width: 24,
                   height: 24,
                   borderRadius: 4,
-                  backgroundColor: rgbaToHex(secondaryColor),
+                  backgroundColor: secondaryHex,
                   cursor: 'pointer',
                   border:
                     activeColorSlot === 'secondary'
@@ -349,11 +370,12 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
                   zIndex: activeColorSlot === 'secondary' ? 2 : 1,
                 }}
                 onClick={() => onSelectSlot('secondary')}
-                title={`Cor Secundária: ${rgbaToHex(secondaryColor).toUpperCase()} (Alfa: ${secondaryColor.a}) - Clique para editar`}
+                title={`Cor Secundária: ${secondaryHex.toUpperCase()} (Alfa: ${effectiveSecondary.a}) - Clique para editar`}
               />
               {/* Primary Color Swatch (front) */}
               <div
                 className={`primary-color-preview ${activeColorSlot === 'primary' ? 'active-slot' : ''}`}
+                data-testid="primary-color-swatch"
                 style={{
                   position: 'absolute',
                   left: 0,
@@ -361,7 +383,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
                   width: 26,
                   height: 26,
                   borderRadius: 4,
-                  backgroundColor: currentHex,
+                  backgroundColor: primaryHex,
                   cursor: 'pointer',
                   border:
                     activeColorSlot === 'primary'
@@ -371,12 +393,13 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
                   zIndex: activeColorSlot === 'primary' ? 2 : 1,
                 }}
                 onClick={() => onSelectSlot('primary')}
-                title={`Cor Principal: ${currentHex.toUpperCase()} (Alfa: ${currentColor.a}) - Clique para editar`}
+                title={`Cor Principal: ${primaryHex.toUpperCase()} (Alfa: ${effectivePrimary.a}) - Clique para editar`}
               />
               {/* Swap Button */}
               {onSwapColors && (
                 <button
                   type="button"
+                  data-testid="swap-colors-btn"
                   onClick={(e) => {
                     e.stopPropagation();
                     onSwapColors();
@@ -405,8 +428,9 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
           ) : (
             <div
               className="current-color-preview"
-              style={{ backgroundColor: currentHex }}
-              title={`Cor Atual: ${currentHex.toUpperCase()} (Alfa: ${currentColor.a})`}
+              data-testid="current-color-swatch"
+              style={{ backgroundColor: activeHex }}
+              title={`Cor Atual: ${activeHex.toUpperCase()} (Alfa: ${activeColor.a})`}
             />
           )}
         </div>
@@ -426,10 +450,10 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
               type="number"
               min="0"
               max="255"
-              value={currentColor.a}
+              value={activeColor.a}
               onChange={(e) =>
                 onColorChange({
-                  ...currentColor,
+                  ...activeColor,
                   a: Math.min(255, Math.max(0, parseInt(e.target.value) || 0)),
                 })
               }
@@ -525,7 +549,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
             className="swatch"
             style={{ backgroundColor: hex }}
             onClick={() => {
-              const parsed = hexToRgba(hex, currentColor.a);
+              const parsed = hexToRgba(hex, activeColor.a);
               onColorChange(parsed);
               const hsv = rgbToHsv(parsed.r, parsed.g, parsed.b);
               setUserHue(hsv.h);
@@ -549,7 +573,7 @@ export const ColorTrianglePicker: React.FC<ColorTrianglePickerProps> = ({
                 className="swatch"
                 style={{ backgroundColor: hex }}
                 onClick={() => {
-                  const parsed = hexToRgba(hex, currentColor.a);
+                  const parsed = hexToRgba(hex, activeColor.a);
                   onColorChange(parsed);
                   const hsv = rgbToHsv(parsed.r, parsed.g, parsed.b);
                   setUserHue(hsv.h);

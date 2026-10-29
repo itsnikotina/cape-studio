@@ -256,11 +256,9 @@ export const App: React.FC = () => {
   };
 
   const handleSwapColors = useCallback(() => {
-    setPrimaryColor((prevPrimary) => {
-      setSecondaryColor(prevPrimary);
-      return secondaryColor;
-    });
-  }, [secondaryColor]);
+    setPrimaryColor(secondaryColor);
+    setSecondaryColor(primaryColor);
+  }, [primaryColor, secondaryColor]);
 
   // Resolution switch
   const handleResolutionChange = (scale: number, customW?: number, customH?: number) => {
@@ -651,7 +649,7 @@ export const App: React.FC = () => {
           />
 
           <ColorTrianglePicker
-            currentColor={activeColorSlot === 'secondary' ? secondaryColor : primaryColor}
+            primaryColor={primaryColor}
             secondaryColor={secondaryColor}
             activeColorSlot={activeColorSlot}
             onSelectSlot={setActiveColorSlot}
