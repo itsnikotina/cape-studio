@@ -207,6 +207,16 @@ export class DocumentModel {
     this.activeLayerId = baseLayer.id;
   }
 
+  resetDocument(width = 64, height = 32, scale = 1, isCustom = false): void {
+    this.dimensions = { width, height, scale, isCustom };
+    this.layers = [];
+    const baseLayer = this.createLayer('Camada 1');
+    this.layers.push(baseLayer);
+    this.activeLayerId = baseLayer.id;
+    this.composite();
+    this.notifyUpdate();
+  }
+
   subscribe(fn: () => void): () => void {
     this.listeners.add(fn);
     return () => {

@@ -46,8 +46,8 @@ export function serializeDocument(
   const { width, height, scale, isCustom } = doc.dimensions;
   const layers: SerializedLayer[] = doc.layers.map((l) => {
     const imgData = l.ctx.getImageData(0, 0, width, height);
-    // Clone bytes to detached Uint8Array
-    const pixelData = new Uint8Array(imgData.data.buffer.slice(0));
+    // Clone bytes to standalone Uint8Array (safe against pooled or sliced ArrayBuffers)
+    const pixelData = new Uint8Array(imgData.data);
     return {
       id: l.id,
       name: l.name,
@@ -85,7 +85,6 @@ export function deserializeDocument(
   }
 
   // Create new document or reuse target
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
   const DocumentModelClass = targetDoc
     ? (targetDoc.constructor as new (w: number, h: number, s: number, c?: boolean) => DocumentModel)
     : null;
@@ -105,21 +104,45 @@ export function deserializeDocument(
     layer.visible = snapLayer.visible;
     layer.opacity = snapLayer.opacity;
 
-    // Restore pixel bytes
-    const clamped = new Uint8ClampedArray(
-      snapLayer.pixelData instanceof Uint8Array
-        ? snapLayer.pixelData.buffer
-        : snapLayer.pixelData
-    );
-
-    const imgData = {
-      data: clamped,
-      width,
-      height,
-      colorSpace: 'srgb',
-    } as ImageData;
+    // Restore pixel bytes reliably regardless of TypedArray / Object / Buffer format
+    let clamped: Uint8ClampedArray;
+    if (snapLayer.pixelData instanceof Uint8ClampedArray) {
+      clamped = snapLayer.pixelData;
+    } else if (snapLayer.pixelData instanceof Uint8Array) {
+      clamped = new Uint8ClampedArray(
+        snapLayer.pixelData.buffer,
+        snapLayer.pixelData.byteOffset,
+        snapLayer.pixelData.byteLength
+      );
+    } else if (
+      snapLayer.pixelData &&
+      (Array.isArray(snapLayer.pixelData) || typeof snapLayer.pixelData === 'object')
+    ) {
+      clamped = new Uint8ClampedArray(Object.values(snapLayer.pixelData));
+    } else {
+      clamped = new Uint8ClampedArray(width * height * 4);
+    }
 
     if (layer.ctx) {
+      let imgData: ImageData;
+      try {
+        // Modern web browsers require genuine ImageData instance for ctx.putImageData
+        if (typeof ImageData !== 'undefined') {
+          imgData = new ImageData(clamped as unknown as Uint8ClampedArray<ArrayBuffer>, width, height);
+        } else if (layer.ctx.createImageData) {
+          imgData = layer.ctx.createImageData(width, height);
+          imgData.data.set(clamped);
+        } else {
+          imgData = { data: clamped, width, height, colorSpace: 'srgb' } as unknown as ImageData;
+        }
+      } catch {
+        if (layer.ctx.createImageData) {
+          imgData = layer.ctx.createImageData(width, height);
+          imgData.data.set(clamped);
+        } else {
+          imgData = { data: clamped, width, height, colorSpace: 'srgb' } as unknown as ImageData;
+        }
+      }
       layer.ctx.putImageData(imgData, 0, 0);
     }
     doc.layers.push(layer);
@@ -130,6 +153,8 @@ export function deserializeDocument(
     doc.activeLayerId = doc.layers[0].id;
   }
 
+  // Pre-composite immediately to sync composite canvas for 2D and 3D preview
+  doc.composite();
   doc.notifyUpdate();
   return doc;
 }

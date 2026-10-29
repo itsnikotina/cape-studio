@@ -12,6 +12,7 @@ import {
   Check,
   AlertCircle,
   Trash2,
+  RotateCcw,
 } from 'lucide-react';
 import type { DocumentDimensions } from '../types/editor';
 
@@ -38,6 +39,8 @@ interface HeaderProps {
     errorMessage: string | null;
   };
   onClearAutoSave?: () => void;
+  hasRecoverableProject?: boolean;
+  onOpenRecoveryModal?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -59,6 +62,8 @@ export const Header: React.FC<HeaderProps> = ({
   onToggleMirror,
   autoSaveStatus,
   onClearAutoSave,
+  hasRecoverableProject,
+  onOpenRecoveryModal,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [showCustomModal, setShowCustomModal] = useState(false);
@@ -164,6 +169,25 @@ export const Header: React.FC<HeaderProps> = ({
               </>
             )}
           </div>
+        )}
+
+        {/* Action button if recoverable project is available */}
+        {hasRecoverableProject && onOpenRecoveryModal && (
+          <button
+            className="btn"
+            style={{
+              padding: '2px 8px',
+              fontSize: '0.72rem',
+              borderColor: 'rgba(56, 189, 248, 0.4)',
+              color: '#38bdf8',
+              backgroundColor: 'rgba(56, 189, 248, 0.1)',
+            }}
+            onClick={onOpenRecoveryModal}
+            title="Reabrir janela de recuperação do projeto anterior"
+          >
+            <RotateCcw size={12} style={{ marginRight: 4 }} />
+            Recuperar Projeto
+          </button>
         )}
       </div>
 
@@ -371,21 +395,36 @@ export const Header: React.FC<HeaderProps> = ({
                 <p style={{ margin: '0 0 12px 0', fontSize: '0.75rem', color: 'var(--text-dim)', lineHeight: 1.4 }}>
                   <strong>Limitações do navegador:</strong> Os dados são mantidos exclusivamente neste navegador e dispositivo. A navegação em modo anônimo (privado), a limpeza de dados do site ou a troca de dispositivo não preservam o salvamento local. Use sempre a opção <strong>Exportar PNG</strong> para guardar seus arquivos permanentemente.
                 </p>
-                {onClearAutoSave && (
-                  <button
-                    className="btn btn-secondary"
-                    style={{ fontSize: '0.75rem', color: '#ef4444', borderColor: '#ef444444' }}
-                    onClick={() => {
-                      if (window.confirm('Tem certeza de que deseja apagar o projeto de recuperação salvo localmente?')) {
-                        onClearAutoSave();
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  {hasRecoverableProject && onOpenRecoveryModal && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.75rem', color: '#38bdf8', borderColor: 'rgba(56, 189, 248, 0.4)' }}
+                      onClick={() => {
                         setShowHelpModal(false);
-                      }
-                    }}
-                  >
-                    <Trash2 size={13} style={{ marginRight: 5 }} />
-                    Limpar Backup Local
-                  </button>
-                )}
+                        onOpenRecoveryModal();
+                      }}
+                    >
+                      <RotateCcw size={13} style={{ marginRight: 5 }} />
+                      Recuperar Backup Local
+                    </button>
+                  )}
+                  {onClearAutoSave && (
+                    <button
+                      className="btn btn-secondary"
+                      style={{ fontSize: '0.75rem', color: '#ef4444', borderColor: '#ef444444' }}
+                      onClick={() => {
+                        if (window.confirm('Tem certeza de que deseja apagar o projeto de recuperação salvo localmente?')) {
+                          onClearAutoSave();
+                          setShowHelpModal(false);
+                        }
+                      }}
+                    >
+                      <Trash2 size={13} style={{ marginRight: 5 }} />
+                      Limpar Backup Local
+                    </button>
+                  )}
+                </div>
               </div>
             </div>
             <div className="modal-actions">

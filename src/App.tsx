@@ -33,6 +33,7 @@ import { ColorTrianglePicker } from './components/ColorTrianglePicker';
 import { LayerManager } from './components/LayerManager';
 import { CanvasEditor } from './components/CanvasEditor';
 import { Preview3DPanel } from './components/Preview3DPanel';
+import { RecoveryModal } from './components/RecoveryModal';
 
 import './styles/app.css';
 
@@ -51,7 +52,8 @@ export const App: React.FC = () => {
     sequence: 0,
   });
   const [recoverableProject, setRecoverableProject] = useState<SerializedProject | null>(null);
-  const [confirmNewDocModal, setConfirmNewDocModal] = useState(false);
+  const [showRecoveryModal, setShowRecoveryModal] = useState(false);
+  const hasUserModificationsRef = useRef(false);
 
   // State
   const [documentName, setDocumentName] = useState('minha_capa');
@@ -116,6 +118,7 @@ export const App: React.FC = () => {
     autoSaveManagerRef.current.loadRecoverableProject().then((project) => {
       if (project && project.layers && project.layers.length > 0) {
         setRecoverableProject(project);
+        setShowRecoveryModal(true);
       }
     });
     return () => unsub();
@@ -124,7 +127,11 @@ export const App: React.FC = () => {
   // Flush pending auto-save before closing the tab or window
   useEffect(() => {
     const handleBeforeUnload = () => {
-      autoSaveManagerRef.current.flush(doc, documentName);
+      // ONLY flush if the user actually modified the document in this session.
+      // Protects saved projects against being overwritten by an empty document on accidental reload!
+      if (hasUserModificationsRef.current) {
+        autoSaveManagerRef.current.flush(doc, documentName);
+      }
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
@@ -136,25 +143,46 @@ export const App: React.FC = () => {
     setExportFilename(project.name || 'minha_capa');
     historyRef.current.clear();
     historyRef.current.pushState(doc.createSnapshot('Projeto Restaurado'));
+    hasUserModificationsRef.current = false;
     syncHistoryStatus();
     doc.notifyUpdate();
     setVersion((v) => v + 1);
-    setRecoverableProject(null);
+    setShowRecoveryModal(false);
+  };
+
+  const handleNewProjectFromRecovery = () => {
+    doc.resetDocument(64, 32, 1, false);
+    historyRef.current.clear();
+    historyRef.current.pushState(doc.createSnapshot('Documento Novo'));
+    setDocumentName('minha_capa');
+    setExportFilename('minha_capa');
+    hasUserModificationsRef.current = false;
+    syncHistoryStatus();
+    setVersion((v) => v + 1);
+    setShowRecoveryModal(false);
+  };
+
+  const handleCloseRecoveryModal = () => {
+    setShowRecoveryModal(false);
+    // Project remains safe in recoverableProject and IndexedDB
   };
 
   const handleClearAutoSave = async () => {
     await autoSaveManagerRef.current.clearRecoverableProject();
     setRecoverableProject(null);
+    setShowRecoveryModal(false);
   };
 
   const handleDocumentNameChange = (name: string) => {
     setDocumentName(name);
     setExportFilename(name);
+    hasUserModificationsRef.current = true;
     autoSaveManagerRef.current.scheduleSave(doc, name, 'Renomear');
   };
 
   // Commit changes to history
   const commitChange = useCallback((description = 'Modificação', colorUsed?: ColorRGBA) => {
+    hasUserModificationsRef.current = true;
     if (strokeBeforeSnapshotRef.current) {
       historyRef.current.pushState(strokeBeforeSnapshotRef.current);
       strokeBeforeSnapshotRef.current = null;
@@ -172,6 +200,7 @@ export const App: React.FC = () => {
 
   // Helper for atomic actions outside drag drawing (layer operations, resize, import, etc.)
   const recordAction = useCallback((action: () => void, description = 'Modificação') => {
+    hasUserModificationsRef.current = true;
     const before = doc.createSnapshot(description);
     action();
     historyRef.current.pushState(before);
@@ -186,6 +215,7 @@ export const App: React.FC = () => {
     const currentSnapshot = doc.createSnapshot('Current');
     const previous = historyRef.current.undo(currentSnapshot);
     if (previous) {
+      hasUserModificationsRef.current = true;
       doc.restoreSnapshot(previous);
       syncHistoryStatus();
       doc.notifyUpdate();
@@ -198,6 +228,7 @@ export const App: React.FC = () => {
     const currentSnapshot = doc.createSnapshot('Current');
     const next = historyRef.current.redo(currentSnapshot);
     if (next) {
+      hasUserModificationsRef.current = true;
       doc.restoreSnapshot(next);
       syncHistoryStatus();
       doc.notifyUpdate();
@@ -478,8 +509,24 @@ export const App: React.FC = () => {
         }
       }
 
-      // Escape -> commit or cancel selection
+      // Escape -> close any open modals first, or cancel/commit selection
       if (e.key === 'Escape') {
+        if (showRecoveryModal) {
+          setShowRecoveryModal(false);
+          return;
+        }
+        if (exportModal) {
+          setExportModal(false);
+          return;
+        }
+        if (warningModal) {
+          setWarningModal(null);
+          return;
+        }
+        if (importModal) {
+          setImportModal(null);
+          return;
+        }
         commitFloatingRef.current();
         return;
       }
@@ -526,7 +573,7 @@ export const App: React.FC = () => {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [doc]);
+  }, [doc, showRecoveryModal, exportModal, warningModal, importModal]);
 
   return (
     <div className="app-container">
@@ -550,6 +597,8 @@ export const App: React.FC = () => {
         onToggleMirror={() => setMirrorHorizontal(!mirrorHorizontal)}
         autoSaveStatus={autoSaveStatus}
         onClearAutoSave={handleClearAutoSave}
+        hasRecoverableProject={Boolean(recoverableProject && !showRecoveryModal)}
+        onOpenRecoveryModal={() => setShowRecoveryModal(true)}
       />
 
       {/* Main Workspace */}
@@ -881,87 +930,14 @@ export const App: React.FC = () => {
         </div>
       )}
 
-      {/* Recovery Prompt Modal */}
-      {recoverableProject && (
-        <div className="modal-backdrop">
-          <div className="modal-content" style={{ maxWidth: 460 }}>
-            <div className="modal-header">
-              <h3>Projeto Recuperável Encontrado</h3>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Encontramos um projeto salvo automaticamente no armazenamento local deste navegador:
-              </p>
-              <div
-                style={{
-                  background: 'var(--bg-secondary)',
-                  border: '1px solid var(--border-color)',
-                  borderRadius: 6,
-                  padding: 12,
-                  fontSize: '0.82rem',
-                  lineHeight: 1.6,
-                  margin: '12px 0',
-                }}
-              >
-                <div><strong>Nome:</strong> {recoverableProject.name}</div>
-                <div><strong>Resolução:</strong> {recoverableProject.dimensions.width}×{recoverableProject.dimensions.height} ({recoverableProject.dimensions.scale}x)</div>
-                <div><strong>Camadas:</strong> {recoverableProject.layers.length} camada(s)</div>
-                <div><strong>Salvo em:</strong> {new Date(recoverableProject.updatedAt).toLocaleString()}</div>
-              </div>
-              <p style={{ fontSize: '0.78rem', color: 'var(--text-dim)', margin: 0 }}>
-                💡 O salvamento automático local (IndexedDB) funciona offline. Caso prefira continuar com uma capa nova, o projeto salvo continuará preservado no navegador.
-              </p>
-            </div>
-            <div className="modal-actions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', marginTop: 14 }}>
-              <button
-                className="btn"
-                onClick={() => setConfirmNewDocModal(true)}
-              >
-                Iniciar Documento Novo
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => handleRestoreProject(recoverableProject)}
-              >
-                Recuperar Projeto
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm New Document Modal */}
-      {confirmNewDocModal && (
-        <div className="modal-backdrop">
-          <div className="modal-content" style={{ maxWidth: 420 }}>
-            <div className="modal-header">
-              <h3>Confirmar Novo Documento</h3>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                Deseja iniciar um documento novo sem recuperar o anterior?
-              </p>
-              <p style={{ fontSize: '0.8rem', color: 'var(--text-dim)' }}>
-                Seu projeto anterior continuará salvo no navegador e poderá ser recuperado posteriormente ou limpo através da tela de Ajuda.
-              </p>
-            </div>
-            <div className="modal-actions" style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button className="btn" onClick={() => setConfirmNewDocModal(false)}>
-                Voltar
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={() => {
-                  setConfirmNewDocModal(false);
-                  setRecoverableProject(null);
-                }}
-              >
-                Continuar com Novo
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Centered Recovery Modal */}
+      <RecoveryModal
+        isOpen={showRecoveryModal}
+        project={recoverableProject}
+        onRestore={() => recoverableProject && handleRestoreProject(recoverableProject)}
+        onNewProject={handleNewProjectFromRecovery}
+        onClose={handleCloseRecoveryModal}
+      />
     </div>
   );
 };
